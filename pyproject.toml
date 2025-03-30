@@ -36,6 +36,7 @@ dependencies = [
     "pyjwt[crypto]>=2.10.1",
     "typing-extensions>=4.9.0",
     "typing-inspection>=0.4.1",
+    "paho-mqtt",
 ]
 
 [project.optional-dependencies]
@@ -142,6 +143,7 @@ members = ["examples/clients/*", "examples/servers/*", "examples/snippets"]
 
 [tool.uv.sources]
 mcp = { workspace = true }
+paho-mqtt = { git = "https://github.com/eclipse-paho/paho.mqtt.python.git", tag = "v2.1.0" }
 
 [tool.pytest.ini_options]
 log_cli = true
