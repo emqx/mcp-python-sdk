@@ -492,6 +492,7 @@ dependencies = [
     { name = "anyio" },
     { name = "httpx" },
     { name = "httpx-sse" },
+    { name = "paho-mqtt" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "sse-starlette" },
@@ -533,6 +534,7 @@ requires-dist = [
     { name = "anyio", specifier = ">=4.5" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "httpx-sse", specifier = ">=0.4" },
+    { name = "paho-mqtt", git = "https://github.com/eclipse-paho/paho.mqtt.python.git?tag=v2.1.0" },
     { name = "pydantic", specifier = ">=2.7.2,<3.0.0" },
     { name = "pydantic-settings", specifier = ">=2.5.2" },
     { name = "python-dotenv", marker = "extra == 'cli'", specifier = ">=1.0.0" },
@@ -855,6 +857,11 @@ sdist = { url = "https://files.pythonhosted.org/packages/ec/46/68dde5b6bc00c1296
 wheels = [
     { url = "https://files.pythonhosted.org/packages/90/96/04b8e52da071d28f5e21a805b19cb9390aa17a47462ac87f5e2696b9566d/paginate-0.5.7-py2.py3-none-any.whl", hash = "sha256:b885e2af73abcf01d9559fd5216b57ef722f8c42affbb63942377668e35c7591", size = 13746 },
 ]
+
+[[package]]
+name = "paho-mqtt"
+version = "2.1.0"
+source = { git = "https://github.com/eclipse-paho/paho.mqtt.python.git?tag=v2.1.0#af64a4365c6ac5a7a4d339e7b00f44df91353b35" }
 
 [[package]]
 name = "pathspec"

@@ -35,6 +35,7 @@ from mcp.server.lowlevel.server import Server as MCPServer
 from mcp.server.lowlevel.server import lifespan as default_lifespan
 from mcp.server.session import ServerSession, ServerSessionT
 from mcp.server.sse import SseServerTransport
+from mcp.server.mqtt import validate_service_name, start_mqtt, MqttOptions
 from mcp.server.stdio import stdio_server
 from mcp.shared.context import LifespanContextT, RequestContext
 from mcp.types import (
@@ -51,7 +52,6 @@ from mcp.types import ResourceTemplate as MCPResourceTemplate
 from mcp.types import Tool as MCPTool
 
 logger = get_logger(__name__)
-
 
 class Settings(BaseSettings, Generic[LifespanResultT]):
     """FastMCP server settings.
@@ -75,6 +75,12 @@ class Settings(BaseSettings, Generic[LifespanResultT]):
     port: int = 8000
     sse_path: str = "/sse"
     message_path: str = "/messages/"
+
+    # MQTT settings
+    mqtt_service_description: str = ''
+    mqtt_service_meta: dict[str, Any] = {}
+    mqtt_client_id_prefix: str | None = None
+    mqtt_options: MqttOptions = MqttOptions()
 
     # resource settings
     warn_on_duplicate_resources: bool = True
@@ -145,18 +151,21 @@ class FastMCP:
     def instructions(self) -> str | None:
         return self._mcp_server.instructions
 
-    def run(self, transport: Literal["stdio", "sse"] = "stdio") -> None:
+    def run(self, transport: Literal["stdio", "sse", "mqtt"] = "stdio") -> None:
         """Run the FastMCP server. Note this is a synchronous function.
 
         Args:
             transport: Transport protocol to use ("stdio" or "sse")
         """
-        TRANSPORTS = Literal["stdio", "sse"]
+        TRANSPORTS = Literal["stdio", "sse", "mqtt"]
         if transport not in TRANSPORTS.__args__:  # type: ignore
             raise ValueError(f"Unknown transport: {transport}")
 
         if transport == "stdio":
             anyio.run(self.run_stdio_async)
+        elif transport == "mqtt":
+            validate_service_name(self._mcp_server.name)
+            anyio.run(self.run_mqtt_async)
         else:  # transport == "sse"
             anyio.run(self.run_sse_async)
 
@@ -476,6 +485,23 @@ class FastMCP:
         )
         server = uvicorn.Server(config)
         await server.serve()
+
+    async def run_mqtt_async(self) -> None:
+        """Run the server using MQTT transport."""
+        def server_run(read_stream: Any, write_stream: Any):
+            return self._mcp_server.run(
+                read_stream,
+                write_stream,
+                self._mcp_server.create_initialization_options(),
+            )
+        await start_mqtt(
+            server_run,
+            service_name = self._mcp_server.name,
+            service_description=self.settings.mqtt_service_description,
+            service_meta = self.settings.mqtt_service_meta,
+            client_id_prefix = self.settings.mqtt_client_id_prefix,
+            mqtt_options = self.settings.mqtt_options
+        )
 
     def sse_app(self) -> Starlette:
         """Return an instance of the SSE server app."""

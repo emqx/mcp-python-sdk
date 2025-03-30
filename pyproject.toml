@@ -30,6 +30,7 @@ dependencies = [
     "sse-starlette>=1.6.1",
     "pydantic-settings>=2.5.2",
     "uvicorn>=0.23.1",
+    "paho-mqtt",
 ]
 
 [project.optional-dependencies]
@@ -105,6 +106,7 @@ members = ["examples/servers/*"]
 
 [tool.uv.sources]
 mcp = { workspace = true }
+paho-mqtt = { git = "https://github.com/eclipse-paho/paho.mqtt.python.git", tag = "v2.1.0" }
 
 [tool.pytest.ini_options]
 xfail_strict = true
