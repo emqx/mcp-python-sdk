@@ -592,6 +592,7 @@ class Server(Generic[LifespanResultT, RequestT]):
                         lifespan_context,
                         raise_exceptions,
                     )
+        logger.debug("Server closed")
 
     async def _handle_message(
         self,

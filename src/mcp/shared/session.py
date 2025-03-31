@@ -1,6 +1,6 @@
 import logging
 from collections.abc import Callable
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, asynccontextmanager
 from datetime import timedelta
 from types import TracebackType
 from typing import Any, Generic, Protocol, TypeVar
@@ -196,6 +196,8 @@ class BaseSession(
         self._session_read_timeout_seconds = read_timeout_seconds
         self._in_flight = {}
         self._progress_callbacks = {}
+        self._receive_loop_alive = None
+
         self._exit_stack = AsyncExitStack()
 
     async def __aenter__(self) -> Self:
@@ -215,7 +217,9 @@ class BaseSession(
         # would be very surprising behavior), so make sure to cancel the tasks
         # in the task group.
         self._task_group.cancel_scope.cancel()
-        return await self._task_group.__aexit__(exc_type, exc_val, exc_tb)
+        if self._receive_loop_alive:
+            return await self._task_group.__aexit__(exc_type, exc_val, exc_tb)
+        return False
 
     async def send_request(
         self,
@@ -329,9 +333,19 @@ class BaseSession(
             await self._write_stream.send(session_message)
 
     async def _receive_loop(self) -> None:
+        @asynccontextmanager
+        async def receive_loop_status():
+            try:
+                self._receive_loop_alive = True
+                yield
+            finally:
+                self._receive_loop_alive = False
+
         async with (
             self._read_stream,
             self._write_stream,
+            self._exit_stack,
+            receive_loop_status()
         ):
             try:
                 async for message in self._read_stream:
