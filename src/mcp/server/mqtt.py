@@ -8,7 +8,7 @@ import asyncio
 import json
 import traceback
 from types import TracebackType
-import mcp.shared.mqtt_channel as mqtt_channel
+import mcp.shared.mqtt_topic as mqtt_topic
 import paho.mqtt.client as mqtt
 import logging
 from paho.mqtt.reasoncodes import ReasonCode
@@ -24,6 +24,7 @@ import mcp.types as types
 from typing_extensions import Self
 
 QOS = 1
+PROPERTY_K_MCP_CLIENT_ID = "mcp-client-id"
 logger = logging.getLogger(__name__)
 
 RcvStream : TypeAlias = MemoryObjectReceiveStream[types.JSONRPCMessage]
@@ -72,9 +73,9 @@ class MqttTransport:
         self.service_description = service_description
         self.service_meta = service_meta
         self.service_id = service_id
-        self.service_control_channel = mqtt_channel.get_service_control_channel(service_name)
-        self.service_presence_channel = mqtt_channel.get_service_presence_channel(service_id, service_name)
-        self.service_capability_change_channel = mqtt_channel.get_service_capability_change_channel(service_id, service_name)
+        self.service_control_topic = mqtt_topic.get_service_control_topic(service_name)
+        self.service_presence_topic = mqtt_topic.get_service_presence_topic(service_id, service_name)
+        self.service_capability_change_topic = mqtt_topic.get_service_capability_change_topic(service_id, service_name)
         self.server_run = server_run
         client = mqtt.Client(
             callback_api_version=CallbackAPIVersion.VERSION2,
@@ -96,7 +97,7 @@ class MqttTransport:
             client.tls_insecure_set(mqtt_options.tls_insecure)
         if mqtt_options.transport == 'websockets':
             client.ws_set_options(path=mqtt_options.websocket_path, headers=mqtt_options.websocket_headers)
-        client.will_set(topic=self.service_presence_channel, payload=None, qos=QOS, retain=True)
+        client.will_set(topic=self.service_presence_topic, payload=None, qos=QOS, retain=True)
         client.on_connect = self._on_connect
         client.on_message = self._on_message
         client.on_subscribe = self._on_subscribe
@@ -122,7 +123,7 @@ class MqttTransport:
             self.assert_property(properties, "RetainAvailable", 1)
             self.assert_property(properties, "WildcardSubscriptionAvailable", 1)
             ## Subscribe to the service control channel
-            client.subscribe(self.service_control_channel, QOS)
+            client.subscribe(self.service_control_topic, QOS)
             ## Reister the service on the presence channel
             online_msg = types.JSONRPCNotification(
                 jsonrpc="2.0",
@@ -132,7 +133,7 @@ class MqttTransport:
                     "meta": self.service_meta
                 }
             )
-            client.publish(self.service_presence_channel,
+            client.publish(self.service_presence_topic,
                            payload=online_msg.model_dump_json(), qos=QOS, retain=True)
         else:
             logger.error(f"Failed to connect, return code {reason_code}")
@@ -140,13 +141,13 @@ class MqttTransport:
     def _on_message(self, client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage):
         logger.debug(f"Received message on topic {msg.topic}: {msg.payload.decode()}")
         match msg.topic:
-            case str() as t if t == self.service_control_channel:
+            case str() as t if t == self.service_control_topic:
                 self.handle_service_contorl_message(msg)
-            case str() as t if t.startswith(mqtt_channel.CLIENT_CAPABILITY_CHANGE_BASE):
+            case str() as t if t.startswith(mqtt_topic.CLIENT_CAPABILITY_CHANGE_BASE):
                 self.handle_client_capability_change_message(msg)
-            case str() as t if t.startswith(mqtt_channel.RPC_BASE):
+            case str() as t if t.startswith(mqtt_topic.RPC_BASE):
                 self.handle_rpc_message(msg)
-            case str() as t if t.startswith(mqtt_channel.CLIENT_PRESENCE_BASE):
+            case str() as t if t.startswith(mqtt_topic.CLIENT_PRESENCE_BASE):
                 self.handle_client_presence_message(msg)
             case _:
                 logger.error(f"Received message on unexpected topic: {msg.topic}")
@@ -170,21 +171,21 @@ class MqttTransport:
                     )
                 )
                 self.publish_json_rpc_message(
-                    mqtt_channel.get_rpc_channel(mcp_client_id, self.service_name),
+                    mqtt_topic.get_rpc_topic(mcp_client_id, self.service_name),
                     types.JSONRPCMessage(err)
                 )
 
     def handle_service_contorl_message(self, msg: mqtt.MQTTMessage):
         if msg.properties and hasattr(msg.properties, "UserProperty"):
             user_properties: dict[str, Any] = dict(msg.properties.UserProperty) # type: ignore
-            if "mcp_client_id" in user_properties:
-                mcp_client_id = user_properties["mcp_client_id"]
+            if PROPERTY_K_MCP_CLIENT_ID in user_properties:
+                mcp_client_id = user_properties[PROPERTY_K_MCP_CLIENT_ID]
                 if mcp_client_id in self._read_stream_writers:
                     anyio.from_thread.run(self.send_message_to_session, mcp_client_id, msg)
                 else:
                     self.maybe_subscribe_to_client(mcp_client_id, msg)
             else:
-                logger.error("No mcp_client_id in UserProperties")
+                logger.error(f"No {PROPERTY_K_MCP_CLIENT_ID} in UserProperties")
         else:
             logger.error("No UserProperties in control message")
 
@@ -245,9 +246,9 @@ class MqttTransport:
 
     def subscribe_to_client(self, mcp_client_id: str, msg: mqtt.MQTTMessage, rcp_msg_id: Any):
         topic_filters = [
-            (mqtt_channel.get_client_presence_channel(mcp_client_id), SubscribeOptions(qos=QOS)),
-            (mqtt_channel.get_client_capability_change_channel(mcp_client_id), SubscribeOptions(qos=QOS)),
-            (mqtt_channel.get_rpc_channel(mcp_client_id, self.service_name), SubscribeOptions(qos=QOS, noLocal=True))
+            (mqtt_topic.get_client_presence_topic(mcp_client_id), SubscribeOptions(qos=QOS)),
+            (mqtt_topic.get_client_capability_change_topic(mcp_client_id), SubscribeOptions(qos=QOS)),
+            (mqtt_topic.get_rpc_topic(mcp_client_id, self.service_name), SubscribeOptions(qos=QOS, noLocal=True))
         ]
         ret, mid = self.client.subscribe(topic=topic_filters)
         if ret != mqtt.MQTT_ERR_SUCCESS:
@@ -280,16 +281,13 @@ class MqttTransport:
             async for msg in write_stream_reader:
                 logger.debug(f"Got msg from session for mcp_client_id: {mcp_client_id}, msg: {msg}")
                 match msg.model_dump():
-                    case {"method": "notifications/resources/updated", "params": {"uri": uri}}:
-                        ## Mantain a mapping of resource_id to uri
-                        resource_id = uuid4().hex
-                        self.resource_ids[resource_id] = uri
-                        topic = mqtt_channel.get_service_resource_update_channel(self.service_id, resource_id)
+                    case {"method": "notifications/resources/updated"}:
+                        logger.warning("Resource updates should not be sent from the session. Ignoring.")
                     case {"method": method} if method.endswith("/list_changed"):
-                        topic = mqtt_channel.get_service_capability_change_channel(self.service_id, self.service_name)
+                        logger.warning("Resource updates should not be sent from the session. Ignoring.")
                     case _:
-                        topic = mqtt_channel.get_rpc_channel(mcp_client_id, self.service_name)
-                self.publish_json_rpc_message(topic, msg)
+                        topic = mqtt_topic.get_rpc_topic(mcp_client_id, self.service_name)
+                        self.publish_json_rpc_message(topic, msg)
         # cleanup
         if mcp_client_id in self._read_stream_writers:
             logger.debug(f"Removing session for mcp_client_id: {mcp_client_id}")
@@ -321,7 +319,7 @@ class MqttTransport:
             raise ValueError(f"{property_name} not available")
 
     def stop_mqtt(self):
-        self.client.publish(self.service_presence_channel, payload=None, qos=QOS, retain=True)
+        self.client.publish(self.service_presence_topic, payload=None, qos=QOS, retain=True)
         self.client.disconnect()
         self.client.loop_stop()
         for stream in self._read_stream_writers.values():
