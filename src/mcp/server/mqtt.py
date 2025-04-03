@@ -2,8 +2,10 @@
 This module implements the MQTT transport for the MCP server.
 """
 from uuid import uuid4
-from mcp.shared.mqtt import MqttTransportBase, MqttOptions, QOS
+from mcp.shared.mqtt import MqttTransportBase, MqttOptions, QOS, PROPERTY_K_MQTT_CLIENT_ID
 import asyncio
+import anyio.to_thread as anyio_to_thread
+import anyio.from_thread as anyio_from_thread
 import json
 import traceback
 import mcp.shared.mqtt_topic as mqtt_topic
@@ -23,10 +25,9 @@ RcvStreamEx : TypeAlias = MemoryObjectReceiveStream[types.JSONRPCMessage | Excep
 SndStreamEX : TypeAlias = MemoryObjectSendStream[types.JSONRPCMessage | Exception]
 ServerRun : TypeAlias = Callable[[RcvStreamEx, SndStream], Awaitable[Any]]
 
-PROPERTY_K_MCP_CLIENT_ID = "mcp-client-id"
 logger = logging.getLogger(__name__)
 
-class MqttTransport(MqttTransportBase):
+class MqttTransportServer(MqttTransportBase):
 
     def __init__(self, server_run: ServerRun, service_name: str,
                  service_description: str,
@@ -43,8 +44,9 @@ class MqttTransport(MqttTransportBase):
         self.service_presence_topic = mqtt_topic.get_service_presence_topic(self.service_id, service_name)
         self.service_capability_change_topic = mqtt_topic.get_service_capability_change_topic(self.service_id, service_name)
         self.server_run = server_run
-        super().__init__(mqtt_clientid, mqtt_options)
+        super().__init__("mcp-server", mqtt_clientid = mqtt_clientid, mqtt_options = mqtt_options)
         self.presence_topic = mqtt_topic.get_service_presence_topic(self.service_id, service_name)
+        self.disconnected_msg = None
         self.client.will_set(topic=self.presence_topic, payload=None, qos=QOS, retain=True)
 
     def _on_connect(self, client: mqtt.Client, userdata: Any, connect_flags: mqtt.ConnectFlags, reason_code : ReasonCode, properties: Properties | None):
@@ -53,16 +55,17 @@ class MqttTransport(MqttTransportBase):
             ## Subscribe to the service control topic
             client.subscribe(self.service_control_topic, QOS)
             ## Reister the service on the presence topic
-            online_msg = types.JSONRPCNotification(
-                jsonrpc="2.0",
-                method = "notifications/service/online",
-                params = {
-                    "description": self.service_description,
-                    "meta": self.service_meta
-                }
-            )
-            client.publish(self.presence_topic, payload=online_msg.model_dump_json(),
-                        qos=QOS, retain=True)
+            online_msg = types.JSONRPCMessage(
+                types.JSONRPCNotification(
+                    jsonrpc="2.0",
+                    method = "notifications/service/online",
+                    params = {
+                        "description": self.service_description,
+                        "meta": self.service_meta
+                    }
+                ))
+            self.publish_json_rpc_message(
+                self.presence_topic, message=online_msg, retain=True)
 
     def _on_message(self, client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage):
         logger.debug(f"Received message on topic {msg.topic}: {msg.payload.decode()}")
@@ -85,7 +88,7 @@ class MqttTransport(MqttTransportBase):
             ## only create session if all topic subscribed successfully
             if all([rc.value == QOS for rc in reason_code_list]):
                 logger.debug(f"Subscribed to topics for mcp_client_id: {mcp_client_id}")
-                anyio.from_thread.run(self.create_session, mcp_client_id, msg)
+                anyio_from_thread.run(self.create_session, mcp_client_id, msg)
             else:
                 logger.error(f"Failed to subscribe to topics for mcp_client_id: {mcp_client_id}, reason_codes: {reason_code_list}")
                 err = types.JSONRPCError(
@@ -98,30 +101,30 @@ class MqttTransport(MqttTransportBase):
                 )
                 self.publish_json_rpc_message(
                     mqtt_topic.get_rpc_topic(mcp_client_id, self.service_name),
-                    types.JSONRPCMessage(err)
+                    message = types.JSONRPCMessage(err)
                 )
 
     def handle_service_contorl_message(self, msg: mqtt.MQTTMessage):
         if msg.properties and hasattr(msg.properties, "UserProperty"):
             user_properties: dict[str, Any] = dict(msg.properties.UserProperty) # type: ignore
-            if PROPERTY_K_MCP_CLIENT_ID in user_properties:
-                mcp_client_id = user_properties[PROPERTY_K_MCP_CLIENT_ID]
+            if PROPERTY_K_MQTT_CLIENT_ID in user_properties:
+                mcp_client_id = user_properties[PROPERTY_K_MQTT_CLIENT_ID]
                 if mcp_client_id in self._read_stream_writers:
-                    anyio.from_thread.run(self.send_message_to_session, mcp_client_id, msg)
+                    anyio_from_thread.run(self._send_message_to_session, mcp_client_id, msg)
                 else:
                     self.maybe_subscribe_to_client(mcp_client_id, msg)
             else:
-                logger.error(f"No {PROPERTY_K_MCP_CLIENT_ID} in UserProperties")
+                logger.error(f"No {PROPERTY_K_MQTT_CLIENT_ID} in UserProperties")
         else:
             logger.error("No UserProperties in control message")
 
     def handle_client_capability_change_message(self, msg: mqtt.MQTTMessage) -> None:
         mcp_client_id = msg.topic.split("/")[-1]
-        anyio.from_thread.run(self.send_message_to_session, mcp_client_id, msg)
+        anyio_from_thread.run(self._send_message_to_session, mcp_client_id, msg)
 
     def handle_rpc_message(self, msg: mqtt.MQTTMessage) -> None:
         mcp_client_id = msg.topic.split("/")[1]
-        anyio.from_thread.run(self.send_message_to_session, mcp_client_id, msg)
+        anyio_from_thread.run(self._send_message_to_session, mcp_client_id, msg)
 
     def handle_client_presence_message(self, msg: mqtt.MQTTMessage) -> None:
         mcp_client_id = msg.topic.split("/")[-1]
@@ -133,7 +136,7 @@ class MqttTransport(MqttTransportBase):
             if "method" in json_msg:
                 if json_msg["method"] == "notifications/disconnected":
                     stream = self._read_stream_writers.pop(mcp_client_id)
-                    anyio.from_thread.run(stream.aclose)
+                    anyio_from_thread.run(stream.aclose)
                     logger.debug(f"Removed session for mcp_client_id: {mcp_client_id}")
                 else:
                     logger.error(f"Unknown method in control message for mcp_client_id: {mcp_client_id}")
@@ -143,9 +146,9 @@ class MqttTransport(MqttTransportBase):
             logger.error(f"Invalid JSON in control message for mcp_client_id: {mcp_client_id}")
 
     async def create_session(self, mcp_client_id: str, msg: mqtt.MQTTMessage):
-        ## Streams are used to communicate between the MqttTransport and the MCPSession:
-        ## 1. (msg) --> MqttBroker --> MqttTransport -->[read_stream_writer]-->[read_stream]--> MCPSession
-        ## 2. MqttBroker <-- MqttTransport <--[write_stream_reader]--[write_stream]-- MCPSession <-- (msg)
+        ## Streams are used to communicate between the MqttTransportServer and the MCPSession:
+        ## 1. (msg) --> MqttBroker --> MqttTransportServer -->[read_stream_writer]-->[read_stream]--> MCPSession
+        ## 2. MqttBroker <-- MqttTransportServer <--[write_stream_reader]--[write_stream]-- MCPSession <-- (msg)
         read_stream: RcvStreamEx
         read_stream_writer: SndStreamEX
         write_stream: SndStream
@@ -154,9 +157,9 @@ class MqttTransport(MqttTransportBase):
         write_stream, write_stream_reader = anyio.create_memory_object_stream(0)
         self._read_stream_writers[mcp_client_id] = read_stream_writer
         self._task_group.start_soon(self.server_run, read_stream, write_stream)
-        self._task_group.start_soon(self.receieved_from_session, mcp_client_id, write_stream_reader)
+        self._task_group.start_soon(self._receieved_from_session, mcp_client_id, write_stream_reader)
         logger.debug(f"Created new session for mcp_client_id: {mcp_client_id}")
-        await self.send_message_to_session(mcp_client_id, msg)
+        await self._send_message_to_session(mcp_client_id, msg)
 
     def maybe_subscribe_to_client(self, mcp_client_id: str, msg: mqtt.MQTTMessage):
         try:
@@ -185,7 +188,7 @@ class MqttTransport(MqttTransportBase):
         pending_subs[mid] = (mcp_client_id, msg, rcp_msg_id)
         userdata["pending_subs"] = pending_subs
 
-    async def send_message_to_session(self, mcp_client_id: str, msg: mqtt.MQTTMessage):
+    async def _send_message_to_session(self, mcp_client_id: str, msg: mqtt.MQTTMessage):
         payload = msg.payload.decode()
         if mcp_client_id not in self._read_stream_writers:
             logger.error(f"No session for mcp_client_id: {mcp_client_id}")
@@ -202,7 +205,7 @@ class MqttTransport(MqttTransportBase):
             ## TODO: the session does not handle exceptions for now
             #await read_stream_writer.send(exc)
 
-    async def receieved_from_session(self, mcp_client_id: str, write_stream_reader: RcvStream):
+    async def _receieved_from_session(self, mcp_client_id: str, write_stream_reader: RcvStream):
         async with write_stream_reader:
             async for msg in write_stream_reader:
                 logger.debug(f"Got msg from session for mcp_client_id: {mcp_client_id}, msg: {msg}")
@@ -213,7 +216,7 @@ class MqttTransport(MqttTransportBase):
                         logger.warning("Resource updates should not be sent from the session. Ignoring.")
                     case _:
                         topic = mqtt_topic.get_rpc_topic(mcp_client_id, self.service_name)
-                        self.publish_json_rpc_message(topic, msg)
+                        self.publish_json_rpc_message(topic, message = msg)
         # cleanup
         if mcp_client_id in self._read_stream_writers:
             logger.debug(f"Removing session for mcp_client_id: {mcp_client_id}")
@@ -228,7 +231,7 @@ async def start_mqtt(
         service_meta: dict[str, Any],
         client_id_prefix: str | None = None,
         mqtt_options: MqttOptions = MqttOptions()):
-    async with MqttTransport(
+    async with MqttTransportServer(
         server_run,
         service_name = service_name,
         service_description=service_description,
@@ -240,9 +243,11 @@ async def start_mqtt(
             mqtt_trans.connect()
             mqtt_trans.client.loop_forever()
         try:
-            await anyio.to_thread.run_sync(start)
+            await anyio_to_thread.run_sync(start)
         except asyncio.CancelledError:
-            logger.debug("MQTT transport got cancelled")
+            logger.debug("MQTT transport (MCP server) got cancelled")
+        except Exception as exc:
+            logger.error(f"MQTT transport (MCP server) failed with exception: {exc}")
 
 def validate_service_name(name: str):
     if "/" not in name:
