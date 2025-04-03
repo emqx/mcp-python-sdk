@@ -14,8 +14,8 @@ def get_service_control_topic(service_name: str) -> str:
 def get_service_capability_change_topic(service_id: str, service_name: str) -> str:
     return f"{SERVICE_CAPABILITY_CHANGE_BASE}/{service_id}/{service_name}"
 
-def get_service_resource_update_topic(service_id: str) -> str:
-    return f"{SERVICE_RESOURCE_UPDATE_BASE}/{service_id}"
+def get_service_resource_update_topic(service_id: str, service_name: str) -> str:
+    return f"{SERVICE_RESOURCE_UPDATE_BASE}/{service_id}/{service_name}"
 
 def get_service_presence_topic(service_id: str, service_name: str) -> str:
     return f"{SERVICE_PRESENCE_BASE}/{service_id}/{service_name}"

@@ -102,7 +102,7 @@ target-version = "py310"
 "tests/server/fastmcp/test_func_metadata.py" = ["E501"]
 
 [tool.uv.workspace]
-members = ["examples/servers/*"]
+members = ["examples/servers/*", "examples/clients/mqtt-clients/smart-home"]
 
 [tool.uv.sources]
 mcp = { workspace = true }
