@@ -8,7 +8,12 @@ from mcp.server.fastmcp import FastMCP
 mcp = FastMCP(
     "demo_server/echo",
     log_level="DEBUG",
-    mqtt_service_description="A simple FastMCP server that echoes back the input text."
+    mqtt_service_description="A simple FastMCP server that echoes back the input text.",
+    mqtt_options={
+        "host": "broker.emqx.io",
+        "port": 1883,
+        "keepalive": 60,
+    },
 )
 
 @mcp.tool()

@@ -135,7 +135,7 @@ max-returns = 13      # Default is 6
 max-statements = 102  # Default is 50
 
 [tool.uv.workspace]
-members = ["examples/servers/*", "examples/snippets"]
+members = ["examples/servers/*", "examples/snippets", "examples/clients/mqtt-clients/smart-home"]
 
 [tool.uv.sources]
 mcp = { workspace = true }

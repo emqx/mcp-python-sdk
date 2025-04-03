@@ -8,14 +8,19 @@ import logging
 from paho.mqtt.reasoncodes import ReasonCode
 from paho.mqtt.enums import CallbackAPIVersion
 from paho.mqtt.properties import Properties
+from paho.mqtt.packettypes import PacketTypes
 import anyio
+import anyio.from_thread as anyio_from_thread
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from pydantic import BaseModel
 from typing import Literal, Optional, Any, TypeAlias, Callable, Awaitable
 import mcp.types as types
 from typing_extensions import Self
 
+DEFAULT_LOG_FORMAT = "%(asctime)s - %(message)s"
 QOS = 1
+PROPERTY_K_MCP_COMPONENT = "MCP-COMPONENT-TYPE"
+PROPERTY_K_MQTT_CLIENT_ID = "MQTT-CLIENT-ID"
 logger = logging.getLogger(__name__)
 
 RcvStream : TypeAlias = MemoryObjectReceiveStream[types.JSONRPCMessage]
@@ -50,11 +55,17 @@ class MqttTransportBase:
         str, SndStreamEX
     ]
 
-    def __init__(self, mqtt_clientid: str | None = None,
+    def __init__(self, 
+                 mcp_component_type: Literal["mcp-client", "mcp-server"],
+                 mqtt_clientid: str | None = None,
                  mqtt_options: MqttOptions = MqttOptions()):
         self._read_stream_writers = {}
         self.mqtt_clientid = mqtt_clientid
+        self.mcp_component_type = mcp_component_type
         self.mqtt_options = mqtt_options
+        self.presence_topic = ''
+        self.disconnected_msg = None
+        self.disconnected_msg_retain = True
         client = mqtt.Client(
             callback_api_version=CallbackAPIVersion.VERSION2,
             client_id=mqtt_clientid, protocol=mqtt.MQTTv5,
@@ -91,6 +102,7 @@ class MqttTransportBase:
         exc_val: BaseException | None,
         exc_tb: TracebackType | None,
     ) -> bool | None:
+        await self.stop_mqtt()
         self._task_group.cancel_scope.cancel()
         return await self._task_group.__aexit__(exc_type, exc_val, exc_tb)
 
@@ -109,9 +121,15 @@ class MqttTransportBase:
                       reason_code_list: list[ReasonCode], properties: Properties | None):
         pass
 
-    def publish_json_rpc_message(self, topic: str, message: types.JSONRPCMessage):
-        json = message.model_dump_json(by_alias=True, exclude_none=True)
-        self.client.publish(topic, json, qos=QOS)
+    def publish_json_rpc_message(self, topic: str, message: types.JSONRPCMessage | None,
+                                 retain: bool = False):
+        props = Properties(PacketTypes.PUBLISH)
+        props.UserProperty = [
+            (PROPERTY_K_MCP_COMPONENT, self.mcp_component_type),
+            (PROPERTY_K_MQTT_CLIENT_ID, self.mqtt_clientid)
+        ]
+        payload = message.model_dump_json(by_alias=True, exclude_none=True) if message else None
+        self.client.publish(topic=topic, payload=payload, qos=QOS, retain=retain, properties=props)
 
     def connect(self):
         logger.debug("Setting up MQTT connection")
@@ -128,15 +146,19 @@ class MqttTransportBase:
         if get_property(properties, property_name) == expected_value:
             pass
         else:
-            self.stop_mqtt()
+            anyio_from_thread.run(self.stop_mqtt)
             raise ValueError(f"{property_name} not available")
 
-    def stop_mqtt(self):
-        self.client.publish(self.service_presence_topic, payload=None, qos=QOS, retain=True)
+    async def stop_mqtt(self):
+        self.publish_json_rpc_message(
+            self.presence_topic,
+            message = self.disconnected_msg,
+            retain = self.disconnected_msg_retain
+        )
         self.client.disconnect()
         self.client.loop_stop()
         for stream in self._read_stream_writers.values():
-            anyio.from_thread.run(stream.aclose)
+            await stream.aclose()
         self._read_stream_writers = {}
         logger.debug("Disconnected from MQTT broker_host")
 
@@ -146,3 +168,24 @@ def get_property(properties: Properties | None, property_name: str):
     else:
         return False
 
+def configure_logging(
+    level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO",
+    format: str = DEFAULT_LOG_FORMAT,
+) -> None:
+    handlers: list[logging.Handler] = []
+    try:
+        from rich.console import Console
+        from rich.logging import RichHandler
+
+        handlers.append(RichHandler(console=Console(stderr=True), rich_tracebacks=True))
+    except ImportError:
+        pass
+
+    if not handlers:
+        handlers.append(logging.StreamHandler())
+
+    logging.basicConfig(
+        level=level,
+        format=format,
+        handlers=handlers,
+    )
