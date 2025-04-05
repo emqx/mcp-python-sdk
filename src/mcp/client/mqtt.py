@@ -34,7 +34,6 @@ ServerName : TypeAlias = str
 ServerId : TypeAlias = str
 InitializeResult : TypeAlias = Literal["ok"] | Literal["already_connected"] | tuple[Literal["error"], str]
 ConnectResult : TypeAlias = tuple[Literal["ok"], types.InitializeResult] | tuple[Literal["error"], Any]
-DisconnectReason : TypeAlias = Literal["client_initiated_disconnect", "server_initiated_disconnect"]
 
 logger = logging.getLogger(__name__)
 
@@ -79,21 +78,20 @@ class MqttTransportClient(MqttTransportBase):
                  server_name_filter: str = '#',
                  auto_connect_to_mcp_server: bool = False,
                  on_mcp_connect: Callable[["MqttTransportClient", ServerName, ConnectResult], Awaitable[Any]] | None = None,
-                 on_mcp_disconnect: Callable[["MqttTransportClient", ServerName, DisconnectReason], Awaitable[Any]] | None = None,
-                 on_mcp_server_presence: Callable[["MqttTransportClient", ServerName, Literal["online", "offline"]], Awaitable[Any]] | None = None,
+                 on_mcp_disconnect: Callable[["MqttTransportClient", ServerName], Awaitable[Any]] | None = None,
+                 on_mcp_server_discovered: Callable[["MqttTransportClient", ServerName], Awaitable[Any]] | None = None,
                  mqtt_options: MqttOptions = MqttOptions()):
-        self.exit_stack: AsyncExitStack = AsyncExitStack()
         uuid = uuid4().hex
         mqtt_clientid = f"{client_id_prefix}-{uuid}" if client_id_prefix else uuid
         self.server_list: dict[ServerName, dict[ServerId, ServerDefinition]] = {}
-        self.server_sessions: dict[ServerName, MqttClientSession] = {}
+        self.client_sessions: dict[ServerName, MqttClientSession] = {}
         self.mcp_client_id = mqtt_clientid
         self.mcp_client_name = mcp_client_name
         self.server_name_filter = server_name_filter
         self.auto_connect_to_mcp_server = auto_connect_to_mcp_server #TODO: not implemented yet
         self.on_mcp_connect = on_mcp_connect
-        self.on_mcp_disconnect = on_mcp_disconnect #TODO: not implemented yet
-        self.on_mcp_server_presence = on_mcp_server_presence
+        self.on_mcp_disconnect = on_mcp_disconnect
+        self.on_mcp_server_discovered = on_mcp_server_discovered
         self.client_capability_change_topic = mqtt_topic.get_client_capability_change_topic(self.mcp_client_id)
         super().__init__("mcp-client", mqtt_clientid = mqtt_clientid, mqtt_options = mqtt_options)
         self.presence_topic = mqtt_topic.get_client_presence_topic(self.mcp_client_id)
@@ -121,6 +119,9 @@ class MqttTransportClient(MqttTransportBase):
             logger.error(f"MQTT transport (MCP client) failed: {exc}")
             traceback.print_exc()
 
+    def get_session(self, server_name: ServerName) -> MqttClientSession | None:
+        return self.client_sessions.get(server_name, None)
+
     async def initialize_mcp_server(
             self, server_name: str,
             read_timeout_seconds: timedelta | None = None,
@@ -128,7 +129,7 @@ class MqttTransportClient(MqttTransportBase):
             list_roots_callback: ListRootsFnT | None = None,
             logging_callback: LoggingFnT | None = None,
             message_handler: MessageHandlerFnT | None = None) -> InitializeResult:
-        if server_name in self.server_sessions:
+        if server_name in self.client_sessions:
             return "already_connected"
         if server_name not in self.server_list:
             logger.error(f"MCP server not found, server name: {server_name}")
@@ -150,20 +151,20 @@ class MqttTransportClient(MqttTransportBase):
                 logging_callback,
                 message_handler
             )
-            self.server_sessions[server_name] = client_session
+            self.client_sessions[server_name] = client_session
             try:
                 logger.debug(f"before initialize: {server_name}")
                 async def after_initialize():
+                    exit_stack = AsyncExitStack()
                     try:
-                        session = await self.exit_stack.enter_async_context(client_session)
+                        session = await exit_stack.enter_async_context(client_session)
                         init_result = await session.initialize()
                         session.server_info = init_result
                         if self.on_mcp_connect:
                             self._task_group.start_soon(self.on_mcp_connect, self, server_name, ("ok", init_result))
                     except Exception as e:
                         logging.error(f"Failed to initialize server {server_name}: {e}")
-                        await self.exit_stack.aclose()
-                        raise
+                        await exit_stack.aclose()
                 self._task_group.start_soon(after_initialize)
                 logger.debug(f"after initialize: {server_name}")
             except McpError as exc:
@@ -237,7 +238,7 @@ class MqttTransportClient(MqttTransportBase):
     async def _with_session(
             self, server_name: ServerName,
             async_callback: Callable[[MqttClientSession], Awaitable[bool | Any]]) -> bool | Any:
-        if not (client_session := self.server_sessions.get(server_name)):
+        if not (client_session := self.client_sessions.get(server_name, None)):
             logger.error(f"No session for server_name: {server_name}")
             return False
         return await async_callback(client_session)
@@ -316,16 +317,22 @@ class MqttTransportClient(MqttTransportBase):
             self.server_list.setdefault(server_name, {})[server_id] = server_notif.params
             logger.debug(f"Server {server_name} with id {server_id} is online")
             if newly_added_server:
-                if self.on_mcp_server_presence:
-                    anyio_from_thread.run(self.on_mcp_server_presence, self, server_name, "online")
+                if self.on_mcp_server_discovered:
+                    anyio_from_thread.run(self.on_mcp_server_discovered, self, server_name)
         else:
             existing_server = True if server_name in self.server_list else False
             if server_id in self.server_list.get(server_name, {}):
                 logger.debug(f"Server {server_name} with id {server_id} is offline")
                 self.server_list[server_name].pop(server_id)
+                if not self.server_list[server_name]:
+                    self.server_list.pop(server_name)
+                if server_name in self.client_sessions:
+                    _ = self.client_sessions.pop(server_name)
+                    stream = self._read_stream_writers.pop(server_id)
+                    stream.close()
             if existing_server:
-                if self.on_mcp_server_presence:
-                    anyio_from_thread.run(self.on_mcp_server_presence, self, server_name, "offline")
+                if self.on_mcp_disconnect:
+                    anyio_from_thread.run(self.on_mcp_disconnect, self, server_name)
 
     def _handle_rpc_message(self, msg: mqtt.MQTTMessage) -> None:
         server_name = "/".join(msg.topic.split("/")[2:])
@@ -357,10 +364,9 @@ class MqttTransportClient(MqttTransportBase):
         return True
 
     async def _send_message_to_session(self, server_name: ServerName, msg: mqtt.MQTTMessage):
-        if server_name not in self.server_sessions:
+        if not (client_session := self.client_sessions.get(server_name, None)):
             logger.error(f"_send_message_to_session: No session for server_name: {server_name}")
             return
-        client_session: MqttClientSession = self.server_sessions[server_name]
         payload = msg.payload.decode()
         server_id = client_session.server_id
         if server_id not in self._read_stream_writers:
