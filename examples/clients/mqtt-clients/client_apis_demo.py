@@ -6,30 +6,30 @@ from mcp.shared.mqtt import configure_logging
 configure_logging(level="DEBUG")
 logger = logging.getLogger(__name__)
 
-async def on_mcp_server_presence(client, service_name, status):
+async def on_mcp_server_presence(client, server_name, status):
     if status == "online":
-        logger.info(f"Connecting to {service_name}...")
-        await client.initialize_mcp_server(service_name)
+        logger.info(f"Connecting to {server_name}...")
+        await client.initialize_mcp_server(server_name)
 
-async def on_mcp_connect(client, service_name, connect_result):
-    logger.info(f"Connect result to {service_name}: {connect_result}")
-    capabilities = client.service_sessions[service_name].server_info.capabilities
-    logger.info(f"Capabilities of {service_name}: {capabilities}")
+async def on_mcp_connect(client, server_name, connect_result):
+    logger.info(f"Connect result to {server_name}: {connect_result}")
+    capabilities = client.server_sessions[server_name].server_info.capabilities
+    logger.info(f"Capabilities of {server_name}: {capabilities}")
     if capabilities.prompts:
-        prompts = await client.list_prompts(service_name)
-        logger.info(f"Prompts of {service_name}: {prompts}")
+        prompts = await client.list_prompts(server_name)
+        logger.info(f"Prompts of {server_name}: {prompts}")
     if capabilities.resources:
-        resources = await client.list_resources(service_name)
-        logger.info(f"Resources of {service_name}: {resources}")
-        resource_templates = await client.list_resource_templates(service_name)
-        logger.info(f"Resources templates of {service_name}: {resource_templates}")
+        resources = await client.list_resources(server_name)
+        logger.info(f"Resources of {server_name}: {resources}")
+        resource_templates = await client.list_resource_templates(server_name)
+        logger.info(f"Resources templates of {server_name}: {resource_templates}")
     if capabilities.tools:
-        tools = await client.list_tools(service_name)
-        logger.info(f"Tools of {service_name}: {tools}")
+        tools = await client.list_tools(server_name)
+        logger.info(f"Tools of {server_name}: {tools}")
 
-async def on_mcp_disconnect(client, service_name, reason):
-    logger.info(f"Disconnected from {service_name}, reason: {reason}")
-    logger.info(f"Services now: {client.service_sessions}")
+async def on_mcp_disconnect(client, server_name, reason):
+    logger.info(f"Disconnected from {server_name}, reason: {reason}")
+    logger.info(f"Server sessions now: {client.server_sessions}")
 
 async def main():
     async with mcp_mqtt.MqttTransportClient(

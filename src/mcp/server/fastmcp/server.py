@@ -35,7 +35,7 @@ from mcp.server.lowlevel.server import Server as MCPServer
 from mcp.server.lowlevel.server import lifespan as default_lifespan
 from mcp.server.session import ServerSession, ServerSessionT
 from mcp.server.sse import SseServerTransport
-from mcp.server.mqtt import validate_service_name, start_mqtt, MqttOptions
+from mcp.server.mqtt import validate_server_name, start_mqtt, MqttOptions
 from mcp.server.stdio import stdio_server
 from mcp.shared.context import LifespanContextT, RequestContext
 from mcp.types import (
@@ -77,8 +77,8 @@ class Settings(BaseSettings, Generic[LifespanResultT]):
     message_path: str = "/messages/"
 
     # MQTT settings
-    mqtt_service_description: str = ''
-    mqtt_service_meta: dict[str, Any] = {}
+    mqtt_server_description: str = ''
+    mqtt_server_meta: dict[str, Any] = {}
     mqtt_client_id_prefix: str | None = None
     mqtt_options: MqttOptions = MqttOptions()
 
@@ -164,7 +164,7 @@ class FastMCP:
         if transport == "stdio":
             anyio.run(self.run_stdio_async)
         elif transport == "mqtt":
-            validate_service_name(self._mcp_server.name)
+            validate_server_name(self._mcp_server.name)
             anyio.run(self.run_mqtt_async)
         else:  # transport == "sse"
             anyio.run(self.run_sse_async)
@@ -488,17 +488,17 @@ class FastMCP:
 
     async def run_mqtt_async(self) -> None:
         """Run the server using MQTT transport."""
-        def server_run(read_stream: Any, write_stream: Any):
+        def server_session_run(read_stream: Any, write_stream: Any):
             return self._mcp_server.run(
                 read_stream,
                 write_stream,
                 self._mcp_server.create_initialization_options(),
             )
         await start_mqtt(
-            server_run,
-            service_name = self._mcp_server.name,
-            service_description=self.settings.mqtt_service_description,
-            service_meta = self.settings.mqtt_service_meta,
+            server_session_run,
+            server_name = self._mcp_server.name,
+            server_description=self.settings.mqtt_server_description,
+            server_meta = self.settings.mqtt_server_meta,
             client_id_prefix = self.settings.mqtt_client_id_prefix,
             mqtt_options = self.settings.mqtt_options
         )
