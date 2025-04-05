@@ -11,7 +11,6 @@ async def on_mcp_server_discovered(client, server_name):
     await client.initialize_mcp_server(server_name)
 
 async def on_mcp_connect(client, server_name, connect_result):
-    logger.info(f"Connect result to {server_name}: {connect_result}")
     capabilities = client.get_session(server_name).server_info.capabilities
     logger.info(f"Capabilities of {server_name}: {capabilities}")
     if capabilities.prompts:
@@ -23,7 +22,8 @@ async def on_mcp_connect(client, server_name, connect_result):
         resource_templates = await client.list_resource_templates(server_name)
         logger.info(f"Resources templates of {server_name}: {resource_templates}")
     if capabilities.tools:
-        tools = await client.list_tools(server_name)
+        toolsResult = await client.list_tools(server_name)
+        tools = toolsResult.tools
         logger.info(f"Tools of {server_name}: {tools}")
 
 async def on_mcp_disconnect(client, server_name):
@@ -38,8 +38,6 @@ async def main():
         on_mcp_disconnect = on_mcp_disconnect,
         mqtt_options = mcp_mqtt.MqttOptions(
             host="broker.emqx.io",
-            port=1883,
-            keepalive=60
         )
     ) as client:
         client.start()
