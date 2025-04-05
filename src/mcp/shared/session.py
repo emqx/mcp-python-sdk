@@ -252,7 +252,12 @@ class BaseSession(
                 if self._read_timeout_seconds is None
                 else self._read_timeout_seconds.total_seconds()
             ):
-                response_or_error = await response_stream_reader.receive()
+                async with response_stream_reader:
+                    async for response_or_error in response_stream_reader:
+                        if isinstance(response_or_error, JSONRPCError):
+                            raise McpError(response_or_error.error)
+                        else:
+                            return result_type.model_validate(response_or_error.result)
         except TimeoutError:
             raise McpError(
                 ErrorData(
@@ -264,11 +269,6 @@ class BaseSession(
                     ),
                 )
             )
-
-        if isinstance(response_or_error, JSONRPCError):
-            raise McpError(response_or_error.error)
-        else:
-            return result_type.model_validate(response_or_error.result)
 
     async def send_notification(self, notification: SendNotificationT) -> None:
         """
