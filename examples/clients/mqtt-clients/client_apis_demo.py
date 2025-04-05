@@ -6,14 +6,13 @@ from mcp.shared.mqtt import configure_logging
 configure_logging(level="DEBUG")
 logger = logging.getLogger(__name__)
 
-async def on_mcp_server_presence(client, server_name, status):
-    if status == "online":
-        logger.info(f"Connecting to {server_name}...")
-        await client.initialize_mcp_server(server_name)
+async def on_mcp_server_discovered(client, server_name):
+    logger.info(f"Discovered {server_name}, connecting ...")
+    await client.initialize_mcp_server(server_name)
 
 async def on_mcp_connect(client, server_name, connect_result):
     logger.info(f"Connect result to {server_name}: {connect_result}")
-    capabilities = client.server_sessions[server_name].server_info.capabilities
+    capabilities = client.get_session(server_name).server_info.capabilities
     logger.info(f"Capabilities of {server_name}: {capabilities}")
     if capabilities.prompts:
         prompts = await client.list_prompts(server_name)
@@ -27,15 +26,14 @@ async def on_mcp_connect(client, server_name, connect_result):
         tools = await client.list_tools(server_name)
         logger.info(f"Tools of {server_name}: {tools}")
 
-async def on_mcp_disconnect(client, server_name, reason):
-    logger.info(f"Disconnected from {server_name}, reason: {reason}")
-    logger.info(f"Server sessions now: {client.server_sessions}")
+async def on_mcp_disconnect(client, server_name):
+    logger.info(f"Disconnected from {server_name}")
 
 async def main():
     async with mcp_mqtt.MqttTransportClient(
         "test_client",
         auto_connect_to_mcp_server = True,
-        on_mcp_server_presence = on_mcp_server_presence,
+        on_mcp_server_discovered = on_mcp_server_discovered,
         on_mcp_connect = on_mcp_connect,
         on_mcp_disconnect = on_mcp_disconnect,
         mqtt_options = mcp_mqtt.MqttOptions(
