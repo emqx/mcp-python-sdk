@@ -2,7 +2,7 @@
 This module implements the MQTT transport for the MCP server.
 """
 from uuid import uuid4
-from mcp.shared.mqtt import MqttTransportBase, MqttOptions, QOS, PROPERTY_K_MQTT_CLIENT_ID
+from mcp.shared.mqtt import MqttTransportBase, MqttOptions, QOS, PROPERTY_K_MQTT_CLIENT_ID, MCP_SERVER_NAME
 import asyncio
 import anyio.to_thread as anyio_to_thread
 import anyio.from_thread as anyio_from_thread
@@ -40,18 +40,27 @@ class MqttTransportServer(MqttTransportBase):
         self.server_name = server_name
         self.server_description = server_description
         self.server_meta = server_meta
-        self.server_control_topic = mqtt_topic.get_server_control_topic(self.server_id, server_name)
-        self.server_presence_topic = mqtt_topic.get_server_presence_topic(self.server_id, server_name)
-        self.server_capability_change_topic = mqtt_topic.get_server_capability_change_topic(self.server_id, server_name)
         self.server_session_run = server_session_run
-        super().__init__("mcp-server", mqtt_clientid = mqtt_clientid, mqtt_options = mqtt_options)
-        self.presence_topic = mqtt_topic.get_server_presence_topic(self.server_id, server_name)
-        self.disconnected_msg = None
-        self.client.will_set(topic=self.presence_topic, payload=None, qos=QOS, retain=True)
+        super().__init__("mcp-server", mqtt_clientid = mqtt_clientid,
+                         mqtt_options = mqtt_options,
+                         disconnected_msg = None,
+                         disconnected_msg_retain = True)
+
+    def get_presence_topic(self) -> str:
+        return mqtt_topic.get_server_presence_topic(self.server_id, self.server_name)
 
     def _on_connect(self, client: mqtt.Client, userdata: Any, connect_flags: mqtt.ConnectFlags, reason_code : ReasonCode, properties: Properties | None):
         if reason_code == 0:
             super()._on_connect(client, userdata, connect_flags, reason_code, properties)
+            if properties and hasattr(properties, "UserProperty"):
+                user_properties: dict[str, Any] = dict(properties.UserProperty) # type: ignore
+                if MCP_SERVER_NAME in user_properties:
+                    broker_suggested_server_name = user_properties[MCP_SERVER_NAME]
+                    self.server_name = broker_suggested_server_name
+                    logger.debug(f"Used broker suggested server name: {broker_suggested_server_name}")
+                else:
+                    logger.error(f"No {PROPERTY_K_MQTT_CLIENT_ID} in UserProperties")
+            self.server_control_topic = mqtt_topic.get_server_control_topic(self.server_id, self.server_name)
             ## Subscribe to the server control topic
             client.subscribe(self.server_control_topic, QOS)
             ## Reister the server on the presence topic
@@ -65,7 +74,7 @@ class MqttTransportServer(MqttTransportBase):
                     }
                 ))
             self.publish_json_rpc_message(
-                self.presence_topic, message=online_msg, retain=True)
+                self.get_presence_topic(), message=online_msg, retain=True)
 
     def _on_message(self, client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage):
         logger.debug(f"Received message on topic {msg.topic}: {msg.payload.decode()}")
