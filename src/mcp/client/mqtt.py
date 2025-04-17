@@ -93,19 +93,18 @@ class MqttTransportClient(MqttTransportBase):
         self.on_mcp_disconnect = on_mcp_disconnect
         self.on_mcp_server_discovered = on_mcp_server_discovered
         self.client_capability_change_topic = mqtt_topic.get_client_capability_change_topic(self.mcp_client_id)
-        super().__init__("mcp-client", mqtt_clientid = mqtt_clientid, mqtt_options = mqtt_options)
-        self.presence_topic = mqtt_topic.get_client_presence_topic(self.mcp_client_id)
         ## Send disconnected notification when disconnects
-        self.disconnected_msg = types.JSONRPCNotification(
+        disconnected_msg = types.JSONRPCNotification(
             jsonrpc="2.0",
             method = "notifications/disconnected"
         )
-        self.disconnected_msg_retain = False
-        self.client.will_set(
-            topic=self.presence_topic,
-            payload=self.disconnected_msg.model_dump_json(),
-            qos=QOS
-        )
+        super().__init__("mcp-client", mqtt_clientid = mqtt_clientid,
+                         mqtt_options = mqtt_options,
+                         disconnected_msg = types.JSONRPCMessage(disconnected_msg),
+                         disconnected_msg_retain = False)
+
+    def get_presence_topic(self) -> str:
+        return mqtt_topic.get_client_presence_topic(self.mcp_client_id)
 
     def start(self):
         def do_start():
