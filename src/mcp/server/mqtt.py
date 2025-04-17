@@ -40,7 +40,7 @@ class MqttTransportServer(MqttTransportBase):
         self.server_name = server_name
         self.server_description = server_description
         self.server_meta = server_meta
-        self.server_control_topic = mqtt_topic.get_server_control_topic(server_name)
+        self.server_control_topic = mqtt_topic.get_server_control_topic(self.server_id, server_name)
         self.server_presence_topic = mqtt_topic.get_server_presence_topic(self.server_id, server_name)
         self.server_capability_change_topic = mqtt_topic.get_server_capability_change_topic(self.server_id, server_name)
         self.server_session_run = server_session_run

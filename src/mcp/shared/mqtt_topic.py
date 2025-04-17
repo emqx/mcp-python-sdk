@@ -8,8 +8,8 @@ CLIENT_PRESENCE_BASE: str = '$mcp-client/presence'
 CLIENT_CAPABILITY_CHANGE_BASE: str = '$mcp-client/capability/list-changed'
 RPC_BASE: str = '$mcp-rpc-endpoint'
 
-def get_server_control_topic(server_name: str) -> str:
-    return f"{SERVER_CONTROL_BASE}/{server_name}"
+def get_server_control_topic(server_id: str, server_name: str) -> str:
+    return f"{SERVER_CONTROL_BASE}/{server_id}/{server_name}"
 
 def get_server_capability_change_topic(server_id: str, server_name: str) -> str:
     return f"{SERVER_CAPABILITY_CHANGE_BASE}/{server_id}/{server_name}"
