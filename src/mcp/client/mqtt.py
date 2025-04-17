@@ -396,7 +396,7 @@ class MqttTransportClient(MqttTransportBase):
                         topic = None
                         logger.warning("Resource updates should not be sent from the session. Ignoring.")
                     case {"method": method} if method == "initialize":
-                        topic = mqtt_topic.get_server_control_topic(server_name)
+                        topic = mqtt_topic.get_server_control_topic(server_id, server_name)
                     case _:
                         topic = mqtt_topic.get_rpc_topic(self.mcp_client_id, server_name)
                 if topic:
