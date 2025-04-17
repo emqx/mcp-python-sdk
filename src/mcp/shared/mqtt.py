@@ -16,9 +16,12 @@ from pydantic import BaseModel
 from typing import Literal, Optional, Any, TypeAlias, Callable, Awaitable
 import mcp.types as types
 from typing_extensions import Self
+from abc import ABC, abstractmethod
 
 DEFAULT_LOG_FORMAT = "%(asctime)s - %(message)s"
 QOS = 1
+MCP_SERVER_NAME = "MCP-SERVER-NAME"
+MCP_AUTH_ROLE = "MCP-AUTH-ROLE"
 PROPERTY_K_MCP_COMPONENT = "MCP-COMPONENT-TYPE"
 PROPERTY_K_MQTT_CLIENT_ID = "MQTT-CLIENT-ID"
 logger = logging.getLogger(__name__)
@@ -50,7 +53,7 @@ class MqttOptions(BaseModel):
     websocket_path: str = '/mqtt'
     websocket_headers: Optional[dict[str, str]] = None
 
-class MqttTransportBase:
+class MqttTransportBase(ABC):
     _read_stream_writers: dict[
         str, SndStreamEX
     ]
@@ -58,14 +61,15 @@ class MqttTransportBase:
     def __init__(self, 
                  mcp_component_type: Literal["mcp-client", "mcp-server"],
                  mqtt_clientid: str | None = None,
-                 mqtt_options: MqttOptions = MqttOptions()):
+                 mqtt_options: MqttOptions = MqttOptions(),
+                 disconnected_msg: types.JSONRPCMessage | None = None,
+                 disconnected_msg_retain: bool = True):
         self._read_stream_writers = {}
         self.mqtt_clientid = mqtt_clientid
         self.mcp_component_type = mcp_component_type
         self.mqtt_options = mqtt_options
-        self.presence_topic = ''
-        self.disconnected_msg = None
-        self.disconnected_msg_retain = True
+        self.disconnected_msg = disconnected_msg
+        self.disconnected_msg_retain = disconnected_msg_retain
         client = mqtt.Client(
             callback_api_version=CallbackAPIVersion.VERSION2,
             client_id=mqtt_clientid, protocol=mqtt.MQTTv5,
@@ -89,6 +93,18 @@ class MqttTransportBase:
         client.on_connect = self._on_connect
         client.on_message = self._on_message
         client.on_subscribe = self._on_subscribe
+        ## We need to set an empty will message to clean the retained presence
+        ## message when the MCP server goes offline.
+        ## Note that if the broker suggested a new server name, it's the broker's
+        ## responsibility to clean the retained presence message and send the
+        ## last will message on the changed presence topic.
+        client.will_set(
+            topic = self.get_presence_topic(),
+            payload = disconnected_msg.model_dump_json() if disconnected_msg else None,
+            qos = QOS,
+            retain = disconnected_msg_retain,
+            properties = self.get_publish_properties(),
+        )
         self.client = client
 
     async def __aenter__(self) -> Self:
@@ -123,23 +139,32 @@ class MqttTransportBase:
 
     def publish_json_rpc_message(self, topic: str, message: types.JSONRPCMessage | None,
                                  retain: bool = False):
+        props = self.get_publish_properties()
+        payload = message.model_dump_json(by_alias=True, exclude_none=True) if message else None
+        self.client.publish(topic=topic, payload=payload, qos=QOS, retain=retain, properties=props)
+
+    def get_publish_properties(self):
         props = Properties(PacketTypes.PUBLISH)
         props.UserProperty = [
             (PROPERTY_K_MCP_COMPONENT, self.mcp_component_type),
             (PROPERTY_K_MQTT_CLIENT_ID, self.mqtt_clientid)
         ]
-        payload = message.model_dump_json(by_alias=True, exclude_none=True) if message else None
-        self.client.publish(topic=topic, payload=payload, qos=QOS, retain=retain, properties=props)
+        return props
 
     def connect(self):
         logger.debug("Setting up MQTT connection")
+        props = Properties(PacketTypes.CONNECT)
+        props.UserProperty = [
+            (PROPERTY_K_MCP_COMPONENT, self.mcp_component_type)
+        ]
         self.client.connect(
             host = self.mqtt_options.host,
             port = self.mqtt_options.port,
             keepalive = self.mqtt_options.keepalive,
             bind_address = self.mqtt_options.bind_address,
             bind_port = self.mqtt_options.bind_port,
-            clean_start=True
+            clean_start=True,
+            properties=props,
         )
 
     def assert_property(self, properties: Properties | None, property_name: str, expected_value: Any):
@@ -149,9 +174,13 @@ class MqttTransportBase:
             anyio_from_thread.run(self.stop_mqtt)
             raise ValueError(f"{property_name} not available")
 
+    @abstractmethod
+    def get_presence_topic(self) -> str:
+        pass
+
     async def stop_mqtt(self):
         self.publish_json_rpc_message(
-            self.presence_topic,
+            self.get_presence_topic(),
             message = self.disconnected_msg,
             retain = self.disconnected_msg_retain
         )
