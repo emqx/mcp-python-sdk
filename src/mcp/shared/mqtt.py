@@ -12,7 +12,7 @@ from paho.mqtt.packettypes import PacketTypes
 import anyio
 import anyio.from_thread as anyio_from_thread
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr
 from typing import Literal, Optional, Any, TypeAlias, Callable, Awaitable
 import mcp.types as types
 from typing_extensions import Self
@@ -40,7 +40,7 @@ class MqttOptions(BaseModel):
     bind_address: str = ''
     bind_port: int = 0
     username: Optional[str] = None
-    password: Optional[str] = None
+    password: Optional[SecretStr] = None
     tls_enabled: bool = False
     tls_version: Optional[int] = None
     tls_insecure: bool = False
@@ -76,7 +76,7 @@ class MqttTransportBase(ABC):
             userdata={},
             transport=mqtt_options.transport, reconnect_on_failure=True
         )
-        client.username_pw_set(mqtt_options.username, mqtt_options.password)
+        client.username_pw_set(mqtt_options.username, mqtt_options.password.get_secret_value() if mqtt_options.password else None)
         if mqtt_options.tls_enabled:
             client.tls_set( # type: ignore
                 ca_certs=mqtt_options.ca_certs,
@@ -105,6 +105,7 @@ class MqttTransportBase(ABC):
             retain = disconnected_msg_retain,
             properties = self.get_publish_properties(),
         )
+        logger.info(f"MCP component type: {mcp_component_type}, MQTT clientid: {mqtt_clientid}, MQTT settings: {mqtt_options}")
         self.client = client
 
     async def __aenter__(self) -> Self:
