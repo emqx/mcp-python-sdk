@@ -74,7 +74,9 @@ class MqttClientSession(ClientSession):
 
 class MqttTransportClient(MqttTransportBase):
 
-    def __init__(self, mcp_client_name: str, client_id_prefix: str | None = None,
+    def __init__(self,
+                 mcp_client_name: str,
+                 client_id: str | None = None,
                  server_name_filter: str = '#',
                  auto_connect_to_mcp_server: bool = False,
                  on_mcp_connect: Callable[["MqttTransportClient", ServerName, ConnectResult], Awaitable[Any]] | None = None,
@@ -82,7 +84,7 @@ class MqttTransportClient(MqttTransportBase):
                  on_mcp_server_discovered: Callable[["MqttTransportClient", ServerName], Awaitable[Any]] | None = None,
                  mqtt_options: MqttOptions = MqttOptions()):
         uuid = uuid4().hex
-        mqtt_clientid = f"{client_id_prefix}-{uuid}" if client_id_prefix else uuid
+        mqtt_clientid = client_id if client_id else uuid
         self.server_list: dict[ServerName, dict[ServerId, ServerDefinition]] = {}
         self.client_sessions: dict[ServerName, MqttClientSession] = {}
         self.mcp_client_id = mqtt_clientid
@@ -350,7 +352,7 @@ class MqttTransportClient(MqttTransportBase):
         topic_filters = [
             (mqtt_topic.get_server_capability_change_topic(server_id, server_name), SubscribeOptions(qos=QOS)),
             (mqtt_topic.get_server_resource_update_topic(server_id, server_name), SubscribeOptions(qos=QOS)),
-            (mqtt_topic.get_rpc_topic(self.mcp_client_id, server_name), SubscribeOptions(qos=QOS, noLocal=True))
+            (mqtt_topic.get_rpc_topic(self.mcp_client_id, server_id, server_name), SubscribeOptions(qos=QOS, noLocal=True))
         ]
         ret, mid = self.client.subscribe(topic=topic_filters)
         if ret != mqtt.MQTT_ERR_SUCCESS:
@@ -390,14 +392,14 @@ class MqttTransportClient(MqttTransportBase):
                 match msg.model_dump():
                     case {"method": method} if method == "notifications/initialized":
                         logger.debug(f"Session initialized for server_id: {server_id}")
-                        topic = mqtt_topic.get_rpc_topic(self.mcp_client_id, server_name)
+                        topic = mqtt_topic.get_rpc_topic(self.mcp_client_id, server_id, server_name)
                     case {"method": method} if method.endswith("/list_changed"):
                         topic = None
                         logger.warning("Resource updates should not be sent from the session. Ignoring.")
                     case {"method": method} if method == "initialize":
                         topic = mqtt_topic.get_server_control_topic(server_id, server_name)
                     case _:
-                        topic = mqtt_topic.get_rpc_topic(self.mcp_client_id, server_name)
+                        topic = mqtt_topic.get_rpc_topic(self.mcp_client_id, server_id, server_name)
                 if topic:
                     self.publish_json_rpc_message(topic, message = msg)
         # cleanup

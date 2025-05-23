@@ -32,10 +32,10 @@ class MqttTransportServer(MqttTransportBase):
     def __init__(self, server_session_run: ServerSessionRun, server_name: str,
                  server_description: str,
                  server_meta: dict[str, Any],
-                 client_id_prefix: str | None = None,
+                 client_id: str | None = None,
                  mqtt_options: MqttOptions = MqttOptions()):
         uuid = uuid4().hex
-        mqtt_clientid = f"{client_id_prefix}-{uuid}" if client_id_prefix else uuid
+        mqtt_clientid = client_id if client_id else uuid
         self.server_id = mqtt_clientid
         self.server_name = server_name
         self.server_description = server_description
@@ -109,7 +109,7 @@ class MqttTransportServer(MqttTransportBase):
                     )
                 )
                 self.publish_json_rpc_message(
-                    mqtt_topic.get_rpc_topic(mcp_client_id, self.server_name),
+                    mqtt_topic.get_rpc_topic(mcp_client_id, self.server_id, self.server_name),
                     message = types.JSONRPCMessage(err)
                 )
 
@@ -186,7 +186,7 @@ class MqttTransportServer(MqttTransportBase):
         topic_filters = [
             (mqtt_topic.get_client_presence_topic(mcp_client_id), SubscribeOptions(qos=QOS)),
             (mqtt_topic.get_client_capability_change_topic(mcp_client_id), SubscribeOptions(qos=QOS)),
-            (mqtt_topic.get_rpc_topic(mcp_client_id, self.server_name), SubscribeOptions(qos=QOS, noLocal=True))
+            (mqtt_topic.get_rpc_topic(mcp_client_id, self.server_id, self.server_name), SubscribeOptions(qos=QOS, noLocal=True))
         ]
         ret, mid = self.client.subscribe(topic=topic_filters)
         if ret != mqtt.MQTT_ERR_SUCCESS:
@@ -224,7 +224,7 @@ class MqttTransportServer(MqttTransportBase):
                     case {"method": method} if method.endswith("/list_changed"):
                         logger.warning("Resource updates should not be sent from the session. Ignoring.")
                     case _:
-                        topic = mqtt_topic.get_rpc_topic(mcp_client_id, self.server_name)
+                        topic = mqtt_topic.get_rpc_topic(mcp_client_id, self.server_id, self.server_name)
                         self.publish_json_rpc_message(topic, message = msg)
         # cleanup
         if mcp_client_id in self._read_stream_writers:
@@ -238,14 +238,14 @@ async def start_mqtt(
         server_session_run: ServerSessionRun, server_name: str,
         server_description: str,
         server_meta: dict[str, Any],
-        client_id_prefix: str | None = None,
+        client_id: str | None = None,
         mqtt_options: MqttOptions = MqttOptions()):
     async with MqttTransportServer(
         server_session_run,
         server_name = server_name,
         server_description=server_description,
         server_meta = server_meta,
-        client_id_prefix = client_id_prefix,
+        client_id = client_id,
         mqtt_options = mqtt_options
     ) as mqtt_trans:
         def start():
