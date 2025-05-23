@@ -26,5 +26,5 @@ def get_client_presence_topic(mcp_clientid: str) -> str:
 def get_client_capability_change_topic(mcp_clientid: str) -> str:
     return f"{CLIENT_CAPABILITY_CHANGE_BASE}/{mcp_clientid}"
 
-def get_rpc_topic(mcp_clientid: str, server_name: str) -> str:
-    return f"{RPC_BASE}/{mcp_clientid}/{server_name}"
+def get_rpc_topic(mcp_clientid: str, server_id: str, server_name: str) -> str:
+    return f"{RPC_BASE}/{mcp_clientid}/{server_id}/{server_name}"

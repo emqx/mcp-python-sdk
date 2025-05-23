@@ -79,7 +79,7 @@ class Settings(BaseSettings, Generic[LifespanResultT]):
     # MQTT settings
     mqtt_server_description: str = ''
     mqtt_server_meta: dict[str, Any] = {}
-    mqtt_client_id_prefix: str | None = None
+    mqtt_client_id: str | None = None
     mqtt_options: MqttOptions = MqttOptions()
 
     # resource settings
@@ -499,7 +499,7 @@ class FastMCP:
             server_name = self._mcp_server.name,
             server_description=self.settings.mqtt_server_description,
             server_meta = self.settings.mqtt_server_meta,
-            client_id_prefix = self.settings.mqtt_client_id_prefix,
+            client_id = self.settings.mqtt_client_id,
             mqtt_options = self.settings.mqtt_options
         )
 
