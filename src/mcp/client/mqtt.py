@@ -336,7 +336,7 @@ class MqttTransportClient(MqttTransportBase):
                     anyio_from_thread.run(self.on_mcp_disconnect, self, server_name)
 
     def _handle_rpc_message(self, msg: mqtt.MQTTMessage) -> None:
-        server_name = "/".join(msg.topic.split("/")[2:])
+        server_name = "/".join(msg.topic.split("/")[3:])
         anyio_from_thread.run(self._send_message_to_session, server_name, msg)
 
     def _handle_server_capability_list_changed_message(self, msg: mqtt.MQTTMessage) -> None:
