@@ -50,8 +50,8 @@ class MqttTransportServer(MqttTransportBase):
         return mqtt_topic.get_server_presence_topic(self.server_id, self.server_name)
 
     def _on_connect(self, client: mqtt.Client, userdata: Any, connect_flags: mqtt.ConnectFlags, reason_code : ReasonCode, properties: Properties | None):
+        super()._on_connect(client, userdata, connect_flags, reason_code, properties)
         if reason_code == 0:
-            super()._on_connect(client, userdata, connect_flags, reason_code, properties)
             if properties and hasattr(properties, "UserProperty"):
                 user_properties: dict[str, Any] = dict(properties.UserProperty) # type: ignore
                 if MCP_SERVER_NAME in user_properties:

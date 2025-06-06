@@ -65,6 +65,7 @@ class MqttTransportBase(ABC):
                  disconnected_msg: types.JSONRPCMessage | None = None,
                  disconnected_msg_retain: bool = True):
         self._read_stream_writers = {}
+        self._last_connect_fail_reason = None
         self.mqtt_clientid = mqtt_clientid
         self.mcp_component_type = mcp_component_type
         self.mqtt_options = mqtt_options
@@ -74,7 +75,11 @@ class MqttTransportBase(ABC):
             callback_api_version=CallbackAPIVersion.VERSION2,
             client_id=mqtt_clientid, protocol=mqtt.MQTTv5,
             userdata={},
-            transport=mqtt_options.transport, reconnect_on_failure=True
+            transport=mqtt_options.transport,
+            reconnect_on_failure=True
+        )
+        client.reconnect_delay_set(
+            min_delay=1, max_delay=120
         )
         client.username_pw_set(mqtt_options.username, mqtt_options.password.get_secret_value() if mqtt_options.password else None)
         if mqtt_options.tls_enabled:
@@ -123,12 +128,13 @@ class MqttTransportBase(ABC):
         self._task_group.cancel_scope.cancel()
         return await self._task_group.__aexit__(exc_type, exc_val, exc_tb)
 
-    def _on_connect(self, client: mqtt.Client, userdata: Any, connect_flags: mqtt.ConnectFlags, reason_code : ReasonCode, properties: Properties | None):
+    def _on_connect(self, client: mqtt.Client, userdata: Any, connect_flags: mqtt.ConnectFlags, reason_code: ReasonCode, properties: Properties | None):
         if reason_code == 0:
             logger.debug(f"Connected to MQTT broker_host at {self.mqtt_options.host}:{self.mqtt_options.port}")
             self.assert_property(properties, "RetainAvailable", 1)
             self.assert_property(properties, "WildcardSubscriptionAvailable", 1)
         else:
+            self._last_connect_fail_reason = reason_code
             logger.error(f"Failed to connect, return code {reason_code}")
 
     def _on_message(self, client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage):
@@ -137,6 +143,12 @@ class MqttTransportBase(ABC):
     def _on_subscribe(self, client: mqtt.Client, userdata: Any, mid: int,
                       reason_code_list: list[ReasonCode], properties: Properties | None):
         pass
+
+    def is_connected(self) -> bool:
+        return self.client.is_connected()
+
+    def get_last_connect_fail_reason(self) -> ReasonCode | None:
+        return self._last_connect_fail_reason
 
     def publish_json_rpc_message(self, topic: str, message: types.JSONRPCMessage | None,
                                  retain: bool = False):

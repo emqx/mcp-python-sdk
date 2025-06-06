@@ -108,17 +108,31 @@ class MqttTransportClient(MqttTransportBase):
     def get_presence_topic(self) -> str:
         return mqtt_topic.get_client_presence_topic(self.mcp_client_id)
 
-    def start(self):
+    async def start(self, timeout: timedelta | None = None) -> bool | str:
+        connect_result = self.connect()
         def do_start():
-            self.connect()
             self.client.loop_forever()
         try:
             asyncio.create_task(anyio_to_thread.run_sync(do_start))
+            if connect_result and connect_result != mqtt.MQTT_ERR_SUCCESS:
+                logger.error(f"Failed to connect to MQTT broker, error code: {connect_result}")
+                return mqtt.error_string(connect_result)
+            # test if the client is connected and wait until it is connected
+            if timeout:
+                while not self.is_connected():
+                    await asyncio.sleep(0.1)
+                    if timeout.total_seconds() <= 0:
+                        logger.error(f"Timeout while waiting for MQTT client to connect, reason: {self.get_last_connect_fail_reason()}")
+                        return self.get_last_connect_fail_reason() or "timeout"
+                    timeout -= timedelta(seconds=0.1)
+            return True
         except asyncio.CancelledError:
             logger.debug("MQTT transport (MCP client) got cancelled")
+            return "cancelled"
         except Exception as exc:
             logger.error(f"MQTT transport (MCP client) failed: {exc}")
             traceback.print_exc()
+            return "error"
 
     def get_session(self, server_name: ServerName) -> MqttClientSession | None:
         return self.client_sessions.get(server_name, None)
@@ -277,8 +291,8 @@ class MqttTransportClient(MqttTransportBase):
         )
 
     def _on_connect(self, client: mqtt.Client, userdata: Any, connect_flags: mqtt.ConnectFlags, reason_code : ReasonCode, properties: Properties | None):
+        super()._on_connect(client, userdata, connect_flags, reason_code, properties)
         if reason_code == 0:
-            super()._on_connect(client, userdata, connect_flags, reason_code, properties)
             ## Subscribe to the MCP server's presence topic
             client.subscribe(mqtt_topic.get_server_presence_topic('+', self.server_name_filter), qos=QOS)
 
