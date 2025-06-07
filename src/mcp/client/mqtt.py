@@ -109,12 +109,10 @@ class MqttTransportClient(MqttTransportBase):
         return mqtt_topic.get_client_presence_topic(self.mcp_client_id)
 
     async def start(self, timeout: timedelta | None = None) -> bool | str:
-        connect_result = self.connect()
-        def do_start():
-            self.client.loop_forever()
         try:
-            asyncio.create_task(anyio_to_thread.run_sync(do_start))
-            if connect_result and connect_result != mqtt.MQTT_ERR_SUCCESS:
+            connect_result = self.connect()
+            asyncio.create_task(anyio_to_thread.run_sync(self.client.loop_forever))
+            if connect_result != mqtt.MQTT_ERR_SUCCESS:
                 logger.error(f"Failed to connect to MQTT broker, error code: {connect_result}")
                 return mqtt.error_string(connect_result)
             # test if the client is connected and wait until it is connected
@@ -122,17 +120,24 @@ class MqttTransportClient(MqttTransportBase):
                 while not self.is_connected():
                     await asyncio.sleep(0.1)
                     if timeout.total_seconds() <= 0:
-                        logger.error(f"Timeout while waiting for MQTT client to connect, reason: {self.get_last_connect_fail_reason()}")
-                        return self.get_last_connect_fail_reason() or "timeout"
+                        last_fail_reason = self.get_last_connect_fail_reason()
+                        if last_fail_reason:
+                            return last_fail_reason.getName()
+                        return "timeout"
                     timeout -= timedelta(seconds=0.1)
             return True
         except asyncio.CancelledError:
             logger.debug("MQTT transport (MCP client) got cancelled")
             return "cancelled"
+        except ConnectionRefusedError as exc:
+            logger.error(f"MQTT transport (MCP client) failed to connect: {exc}")
+            return "connection_refused"
+        except TimeoutError as exc:
+            logger.error(f"MQTT transport (MCP client) timed out: {exc}")
+            return "timeout"
         except Exception as exc:
             logger.error(f"MQTT transport (MCP client) failed: {exc}")
-            traceback.print_exc()
-            return "error"
+            return f"connect mqtt error: {str(exc)}"
 
     def get_session(self, server_name: ServerName) -> MqttClientSession | None:
         return self.client_sessions.get(server_name, None)
@@ -273,8 +278,8 @@ class MqttTransportClient(MqttTransportBase):
         read_stream_writer: SndStreamEX
         write_stream: SndStream
         write_stream_reader: RcvStream
-        read_stream_writer, read_stream = anyio.create_memory_object_stream(0)
-        write_stream, write_stream_reader = anyio.create_memory_object_stream(0)
+        read_stream_writer, read_stream = anyio.create_memory_object_stream(0) # type: ignore
+        write_stream, write_stream_reader = anyio.create_memory_object_stream(0) # type: ignore
         self._read_stream_writers[server_id] = read_stream_writer
         self._task_group.start_soon(self._receieved_from_session, server_id, server_name, write_stream_reader)
         logger.debug(f"Created new session for server_id: {server_id}")

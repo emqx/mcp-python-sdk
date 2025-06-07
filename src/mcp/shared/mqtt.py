@@ -170,7 +170,7 @@ class MqttTransportBase(ABC):
         props.UserProperty = [
             (PROPERTY_K_MCP_COMPONENT, self.mcp_component_type)
         ]
-        self.client.connect(
+        return self.client.connect(
             host = self.mqtt_options.host,
             port = self.mqtt_options.port,
             keepalive = self.mqtt_options.keepalive,
