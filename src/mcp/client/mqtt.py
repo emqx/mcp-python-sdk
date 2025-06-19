@@ -370,7 +370,6 @@ class MqttTransportClient(MqttTransportBase):
                              after_subscribed: Callable[[Any], Awaitable[None]]):
         topic_filters = [
             (mqtt_topic.get_server_capability_change_topic(server_id, server_name), SubscribeOptions(qos=QOS)),
-            (mqtt_topic.get_server_resource_update_topic(server_id, server_name), SubscribeOptions(qos=QOS)),
             (mqtt_topic.get_rpc_topic(self.mcp_client_id, server_id, server_name), SubscribeOptions(qos=QOS, noLocal=True))
         ]
         ret, mid = self.client.subscribe(topic=topic_filters)
