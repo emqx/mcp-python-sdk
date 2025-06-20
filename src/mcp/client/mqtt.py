@@ -85,6 +85,7 @@ class MqttTransportClient(MqttTransportBase):
                  mqtt_options: MqttOptions = MqttOptions()):
         uuid = uuid4().hex
         mqtt_clientid = client_id if client_id else uuid
+        self._current_server_id: dict[ServerName, ServerId] = {}
         self.server_list: dict[ServerName, dict[ServerId, ServerDefinition]] = {}
         self.client_sessions: dict[ServerName, MqttClientSession] = {}
         self.mcp_client_id = mqtt_clientid
@@ -96,13 +97,15 @@ class MqttTransportClient(MqttTransportBase):
         self.on_mcp_server_discovered = on_mcp_server_discovered
         self.client_capability_change_topic = mqtt_topic.get_client_capability_change_topic(self.mcp_client_id)
         ## Send disconnected notification when disconnects
-        disconnected_msg = types.JSONRPCNotification(
-            jsonrpc="2.0",
-            method = "notifications/disconnected"
+        self._disconnected_msg = types.JSONRPCMessage(
+            types.JSONRPCNotification(
+                jsonrpc="2.0",
+                method = "notifications/disconnected"
+            )
         )
         super().__init__("mcp-client", mqtt_clientid = mqtt_clientid,
                          mqtt_options = mqtt_options,
-                         disconnected_msg = types.JSONRPCMessage(disconnected_msg),
+                         disconnected_msg = self._disconnected_msg,
                          disconnected_msg_retain = False)
 
     def get_presence_topic(self) -> str:
@@ -196,6 +199,12 @@ class MqttTransportClient(MqttTransportBase):
             return "ok"
         else:
             return ("error", "send_subscribe_request_failed")
+
+    async def deinitialize_mcp_server(self, server_name: ServerName) -> None:
+        server_id = self._current_server_id[server_name]
+        topic = mqtt_topic.get_rpc_topic(self.mcp_client_id, server_id, server_name)
+        self.publish_json_rpc_message(topic, message = self._disconnected_msg, retain=False)
+        self._remove_server(server_id, server_name)
 
     async def send_ping(self, server_name: ServerName) -> bool | types.EmptyResult:
         return await self._with_session(server_name, lambda s: s.send_ping())
@@ -309,9 +318,7 @@ class MqttTransportClient(MqttTransportBase):
             case str() as t if t.startswith(mqtt_topic.RPC_BASE):
                 self._handle_rpc_message(msg)
             case str() as t if t.startswith(mqtt_topic.SERVER_CAPABILITY_CHANGE_BASE):
-                self._handle_server_capability_list_changed_message(msg)
-            case str() as t if t.startswith(mqtt_topic.SERVER_RESOURCE_UPDATE_BASE):
-                self._handle_server_capability_resource_updated_message(msg)
+                self._handle_server_capability_message(msg)
             case _:
                 logger.error(f"Received message on unexpected topic: {msg.topic}")
 
@@ -340,29 +347,19 @@ class MqttTransportClient(MqttTransportBase):
                 if self.on_mcp_server_discovered:
                     anyio_from_thread.run(self.on_mcp_server_discovered, self, server_name)
         else:
-            existing_server = True if server_name in self.server_list else False
-            if server_id in self.server_list.get(server_name, {}):
-                logger.debug(f"Server {server_name} with id {server_id} is offline")
-                self.server_list[server_name].pop(server_id)
-                if not self.server_list[server_name]:
-                    self.server_list.pop(server_name)
-                if server_name in self.client_sessions:
-                    _ = self.client_sessions.pop(server_name)
-                    stream = self._read_stream_writers.pop(server_id)
-                    stream.close()
-            if existing_server:
-                if self.on_mcp_disconnect:
-                    anyio_from_thread.run(self.on_mcp_disconnect, self, server_name)
+            # server is offline if the payload is empty
+            logger.debug(f"Server {server_name} with id {server_id} is offline")
+            self._remove_server(server_id, server_name)
+
+    def _remove_server(self, server_id: ServerId, server_name: ServerName) -> None:
+        if server_id in self.server_list.get(server_name, {}):
+            self._read_stream_writers[server_id].close()
 
     def _handle_rpc_message(self, msg: mqtt.MQTTMessage) -> None:
         server_name = "/".join(msg.topic.split("/")[3:])
         anyio_from_thread.run(self._send_message_to_session, server_name, msg)
 
-    def _handle_server_capability_list_changed_message(self, msg: mqtt.MQTTMessage) -> None:
-        server_name = "/".join(msg.topic.split("/")[4:])
-        anyio_from_thread.run(self._send_message_to_session, server_name, msg)
-
-    def _handle_server_capability_resource_updated_message(self, msg: mqtt.MQTTMessage) -> None:
+    def _handle_server_capability_message(self, msg: mqtt.MQTTMessage) -> None:
         server_name = "/".join(msg.topic.split("/")[4:])
         anyio_from_thread.run(self._send_message_to_session, server_name, msg)
 
@@ -426,10 +423,32 @@ class MqttTransportClient(MqttTransportBase):
             stream = self._read_stream_writers.pop(server_id)
             await stream.aclose()
 
+        # unsubscribe from the topics
+        logger.debug(f"Unsubscribing from topics for server_id: {server_id}, server_name: {server_name}")
+        topic_filters = [
+            mqtt_topic.get_server_capability_change_topic(server_id, server_name),
+            mqtt_topic.get_rpc_topic(self.mcp_client_id, server_id, server_name)
+        ]
+        self.client.unsubscribe(topic=topic_filters)
+
+        if server_id in self.server_list.get(server_name, {}):
+            _ = self.server_list[server_name].pop(server_id)
+            if not self.server_list[server_name]:
+                _ = self.server_list.pop(server_name)
+                if self.on_mcp_disconnect:
+                    self._task_group.start_soon(self.on_mcp_disconnect, self, server_name)
+
+        if server_name in self.client_sessions:
+            _ = self.client_sessions.pop(server_name)
+
+        if server_name in self._current_server_id:
+            _ = self._current_server_id.pop(server_name)
         logger.debug(f"Session stream closed for server_id: {server_id}")
 
     def pick_server_id(self, server_name: str) -> ServerId:
-        return random.choice(list(self.server_list[server_name].keys()))
+        server_id = random.choice(list(self.server_list[server_name].keys()))
+        self._current_server_id[server_name] = server_id
+        return server_id
 
 def validate_server_name(name: str):
     if "/" not in name:
