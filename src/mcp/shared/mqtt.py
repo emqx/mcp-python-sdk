@@ -19,7 +19,7 @@ from typing_extensions import Self
 from abc import ABC, abstractmethod
 
 DEFAULT_LOG_FORMAT = "%(asctime)s - %(message)s"
-QOS = 1
+QOS = 0
 MCP_SERVER_NAME = "MCP-SERVER-NAME"
 MCP_AUTH_ROLE = "MCP-AUTH-ROLE"
 PROPERTY_K_MCP_COMPONENT = "MCP-COMPONENT-TYPE"

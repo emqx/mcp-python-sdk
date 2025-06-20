@@ -133,7 +133,20 @@ class MqttTransportServer(MqttTransportBase):
 
     def handle_rpc_message(self, msg: mqtt.MQTTMessage) -> None:
         mcp_client_id = msg.topic.split("/")[1]
-        anyio_from_thread.run(self._send_message_to_session, mcp_client_id, msg)
+        try:
+            json_msg = json.loads(msg.payload.decode())
+            if "method" in json_msg:
+                if json_msg["method"] == "notifications/disconnected":
+                    stream = self._read_stream_writers[mcp_client_id]
+                    anyio_from_thread.run(stream.aclose)
+                    logger.debug(f"Closed read_stream for mcp_client_id: {mcp_client_id}")
+                    return
+                else:
+                    anyio_from_thread.run(self._send_message_to_session, mcp_client_id, msg)
+            else:
+                anyio_from_thread.run(self._send_message_to_session, mcp_client_id, msg)
+        except json.JSONDecodeError:
+            logger.error(f"Invalid JSON in RPC message for mcp_client_id: {mcp_client_id}")
 
     def handle_client_presence_message(self, msg: mqtt.MQTTMessage) -> None:
         mcp_client_id = msg.topic.split("/")[-1]
@@ -144,15 +157,15 @@ class MqttTransportServer(MqttTransportBase):
             json_msg = json.loads(msg.payload.decode())
             if "method" in json_msg:
                 if json_msg["method"] == "notifications/disconnected":
-                    stream = self._read_stream_writers.pop(mcp_client_id)
+                    stream = self._read_stream_writers[mcp_client_id]
                     anyio_from_thread.run(stream.aclose)
-                    logger.debug(f"Removed session for mcp_client_id: {mcp_client_id}")
+                    logger.debug(f"Closed read_stream for mcp_client_id: {mcp_client_id}")
                 else:
-                    logger.error(f"Unknown method in control message for mcp_client_id: {mcp_client_id}")
+                    logger.error(f"Unknown method in presence message for mcp_client_id: {mcp_client_id}")
             else:
-                logger.error(f"No method in control message for mcp_client_id: {mcp_client_id}")
+                logger.error(f"No method in presence message for mcp_client_id: {mcp_client_id}")
         except json.JSONDecodeError:
-            logger.error(f"Invalid JSON in control message for mcp_client_id: {mcp_client_id}")
+            logger.error(f"Invalid JSON in presence message for mcp_client_id: {mcp_client_id}")
 
     async def create_session(self, mcp_client_id: str, msg: mqtt.MQTTMessage):
         ## Streams are used to communicate between the MqttTransportServer and the MCPSession:
@@ -162,8 +175,8 @@ class MqttTransportServer(MqttTransportBase):
         read_stream_writer: SndStreamEX
         write_stream: SndStream
         write_stream_reader: RcvStream
-        read_stream_writer, read_stream = anyio.create_memory_object_stream(0)
-        write_stream, write_stream_reader = anyio.create_memory_object_stream(0)
+        read_stream_writer, read_stream = anyio.create_memory_object_stream(0) # type: ignore
+        write_stream, write_stream_reader = anyio.create_memory_object_stream(0) # type: ignore
         self._read_stream_writers[mcp_client_id] = read_stream_writer
         self._task_group.start_soon(self.server_session_run, read_stream, write_stream)
         self._task_group.start_soon(self._receieved_from_session, mcp_client_id, write_stream_reader)
@@ -231,6 +244,15 @@ class MqttTransportServer(MqttTransportBase):
             logger.debug(f"Removing session for mcp_client_id: {mcp_client_id}")
             stream = self._read_stream_writers.pop(mcp_client_id)
             await stream.aclose()
+
+        # unsubscribe from the client topics
+        logger.debug(f"Unsubscribing from topics for mcp_client_id: {mcp_client_id}")
+        topic_filters = [
+            mqtt_topic.get_client_presence_topic(mcp_client_id),
+            mqtt_topic.get_client_capability_change_topic(mcp_client_id),
+            mqtt_topic.get_rpc_topic(mcp_client_id, self.server_id, self.server_name)
+        ]
+        self.client.unsubscribe(topic=topic_filters)
 
         logger.debug(f"Session stream closed for mcp_client_id: {mcp_client_id}")
 
