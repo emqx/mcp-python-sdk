@@ -186,11 +186,13 @@ class MqttTransportClient(MqttTransportBase):
                         if self.on_mcp_connect:
                             self._task_group.start_soon(self.on_mcp_connect, self, server_name, ("ok", init_result))
                     except Exception as e:
+                        self.client_sessions.pop(server_name)
                         logging.error(f"Failed to initialize server {server_name}: {e}")
                         await exit_stack.aclose()
                 self._task_group.start_soon(after_initialize)
                 logger.debug(f"after initialize: {server_name}")
             except McpError as exc:
+                self.client_sessions.pop(server_name)
                 logger.error(f"Failed to connect to MCP server: {exc}")
                 if self.on_mcp_connect:
                     self._task_group.start_soon(self.on_mcp_connect, self, server_name, ("error", McpError))
