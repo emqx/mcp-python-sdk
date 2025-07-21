@@ -32,7 +32,7 @@ async def on_mcp_disconnect(client, server_name):
 async def main():
     async with mcp_mqtt.MqttTransportClient(
         "test_client",
-        auto_connect_to_mcp_server = True,
+        auto_connect_to_mcp_servers = True,
         on_mcp_server_discovered = on_mcp_server_discovered,
         on_mcp_connect = on_mcp_connect,
         on_mcp_disconnect = on_mcp_disconnect,
