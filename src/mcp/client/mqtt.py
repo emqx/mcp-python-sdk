@@ -78,8 +78,8 @@ class MqttTransportClient(MqttTransportBase):
     def __init__(self,
                  mcp_client_name: str,
                  client_id: str | None = None,
-                 server_name_filters: str | list[str] = '#',
-                 auto_connect_to_mcp_servers: bool = False,
+                 server_name_filter: str | list[str] = '#',
+                 auto_connect_to_mcp_server: bool = False,
                  on_mcp_connect: Callable[["MqttTransportClient", ServerName, ConnectResult], Awaitable[Any]] | None = None,
                  on_mcp_disconnect: Callable[["MqttTransportClient", ServerName], Awaitable[Any]] | None = None,
                  on_mcp_server_discovered: Callable[["MqttTransportClient", ServerName], Awaitable[Any]] | None = None,
@@ -91,11 +91,11 @@ class MqttTransportClient(MqttTransportBase):
         self.client_sessions: dict[ServerName, MqttClientSession] = {}
         self.mcp_client_id = mqtt_clientid
         self.mcp_client_name = mcp_client_name
-        if isinstance(server_name_filters, str):
-            self.server_name_filters = [server_name_filters]
+        if isinstance(server_name_filter, str):
+            self.server_name_filter = [server_name_filter]
         else:
-            self.server_name_filters = server_name_filters
-        self.auto_connect_to_mcp_servers = auto_connect_to_mcp_servers
+            self.server_name_filter = server_name_filter
+        self.auto_connect_to_mcp_server = auto_connect_to_mcp_server
         self.on_mcp_connect = on_mcp_connect
         self.on_mcp_disconnect = on_mcp_disconnect
         self.on_mcp_server_discovered = on_mcp_server_discovered
@@ -315,13 +315,13 @@ class MqttTransportClient(MqttTransportBase):
         if properties and hasattr(properties, "UserProperty"):
             user_properties: dict[str, Any] = dict(properties.UserProperty) # type: ignore
             if MCP_SERVER_NAME_FILTERS in user_properties:
-                self.server_name_filters = json.loads(user_properties[MCP_SERVER_NAME_FILTERS])
-                logger.debug(f"Use broker suggested server name filters: {self.server_name_filters}")
+                self.server_name_filter = json.loads(user_properties[MCP_SERVER_NAME_FILTERS])
+                logger.debug(f"Use broker suggested server name filters: {self.server_name_filter}")
         if reason_code == 0:
             ## Subscribe to the MCP server's presence topic
-            for server_name_filter in self.server_name_filters:
-                logger.debug(f"Subscribing to server presence topic for server_name_filter: {server_name_filter}")
-                client.subscribe(mqtt_topic.get_server_presence_topic('+', server_name_filter), qos=QOS)
+            for snf in self.server_name_filter:
+                logger.debug(f"Subscribing to server presence topic for server_name_filter: {snf}")
+                client.subscribe(mqtt_topic.get_server_presence_topic('+', snf), qos=QOS)
 
     def _on_message(self, client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage):
         logger.debug(f"Received message on topic {msg.topic}: {msg.payload.decode()}")
@@ -357,7 +357,7 @@ class MqttTransportClient(MqttTransportBase):
             self.server_list.setdefault(server_name, {})[server_id] = server_notif.params
             logger.debug(f"Server {server_name} with id {server_id} is online")
             if newly_added_server:
-                if self.auto_connect_to_mcp_servers:
+                if self.auto_connect_to_mcp_server:
                     logger.debug(f"Auto connecting to MCP server {server_name}")
                     anyio_from_thread.run(self.initialize_mcp_server, server_name)
                 if self.on_mcp_server_discovered:
