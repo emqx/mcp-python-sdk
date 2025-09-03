@@ -36,9 +36,9 @@ from mcp.server.lowlevel.helper_types import ReadResourceContents
 from mcp.server.lowlevel.server import LifespanResultT
 from mcp.server.lowlevel.server import Server as MCPServer
 from mcp.server.lowlevel.server import lifespan as default_lifespan
+from mcp.server.mqtt import MqttOptions, start_mqtt, validate_server_name
 from mcp.server.session import ServerSession, ServerSessionT
 from mcp.server.sse import SseServerTransport
-from mcp.server.mqtt import validate_server_name, start_mqtt, MqttOptions
 from mcp.server.stdio import stdio_server
 from mcp.server.streamable_http import EventStore
 from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
@@ -52,6 +52,7 @@ from mcp.types import ResourceTemplate as MCPResourceTemplate
 from mcp.types import Tool as MCPTool
 
 logger = get_logger(__name__)
+
 
 class Settings(BaseSettings, Generic[LifespanResultT]):
     """FastMCP server settings.
@@ -86,7 +87,7 @@ class Settings(BaseSettings, Generic[LifespanResultT]):
     """Define if the server should create a new transport per request."""
 
     # MQTT settings
-    mqtt_server_description: str = ''
+    mqtt_server_description: str = ""
     mqtt_server_meta: dict[str, Any] = {}
     mqtt_client_id: str | None = None
     mqtt_options: MqttOptions = MqttOptions()
@@ -735,19 +736,21 @@ class FastMCP(Generic[LifespanResultT]):
 
     async def run_mqtt_async(self) -> None:
         """Run the server using MQTT transport."""
+
         def server_session_run(read_stream: Any, write_stream: Any):
             return self._mcp_server.run(
                 read_stream,
                 write_stream,
                 self._mcp_server.create_initialization_options(),
             )
+
         await start_mqtt(
             server_session_run,
-            server_name = self._mcp_server.name,
+            server_name=self._mcp_server.name,
             server_description=self.settings.mqtt_server_description,
-            server_meta = self.settings.mqtt_server_meta,
-            client_id = self.settings.mqtt_client_id,
-            mqtt_options = self.settings.mqtt_options
+            server_meta=self.settings.mqtt_server_meta,
+            client_id=self.settings.mqtt_client_id,
+            mqtt_options=self.settings.mqtt_options,
         )
 
     def sse_app(self, mount_path: str | None = None) -> Starlette:

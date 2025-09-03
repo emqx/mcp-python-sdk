@@ -1,5 +1,7 @@
 import logging
+
 import anyio
+
 import mcp.client.mqtt as mcp_mqtt
 from mcp.shared.mqtt import configure_logging
 

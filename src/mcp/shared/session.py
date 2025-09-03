@@ -274,11 +274,7 @@ class BaseSession(
             try:
                 with anyio.fail_after(timeout):
                     async with response_stream_reader:
-                        async for response_or_error in response_stream_reader:
-                            if isinstance(response_or_error, JSONRPCError):
-                                raise McpError(response_or_error.error)
-                            else:
-                                return result_type.model_validate(response_or_error.result)
+                        response_or_error = await response_stream_reader.receive()
             except TimeoutError:
                 raise McpError(
                     ErrorData(
@@ -290,6 +286,11 @@ class BaseSession(
                         ),
                     )
                 )
+
+            if isinstance(response_or_error, JSONRPCError):
+                raise McpError(response_or_error.error)
+            else:
+                return result_type.model_validate(response_or_error.result)
 
         finally:
             self._response_streams.pop(request_id, None)
@@ -341,12 +342,7 @@ class BaseSession(
             finally:
                 self._receive_loop_alive = False
 
-        async with (
-            self._read_stream,
-            self._write_stream,
-            self._exit_stack,
-            receive_loop_status()
-        ):
+        async with self._read_stream, self._write_stream, self._exit_stack, receive_loop_status():
             try:
                 async for message in self._read_stream:
                     if isinstance(message, Exception):

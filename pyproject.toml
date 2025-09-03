@@ -60,6 +60,9 @@ dev = [
     "pytest-pretty>=1.2.0",
     "inline-snapshot>=0.23.0",
     "dirty-equals>=0.9.0",
+    "typer>=0.17.4",
+    "python-dotenv>=1.1.1",
+    "websockets>=15.0.1",
 ]
 docs = [
     "mkdocs>=1.6.1",
@@ -139,7 +142,6 @@ members = ["examples/servers/*", "examples/snippets", "examples/clients/mqtt-cli
 
 [tool.uv.sources]
 mcp = { workspace = true }
-paho-mqtt = { git = "https://github.com/eclipse-paho/paho.mqtt.python.git", tag = "v2.1.0" }
 
 [tool.pytest.ini_options]
 log_cli = true
