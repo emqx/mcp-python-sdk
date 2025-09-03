@@ -369,7 +369,9 @@ class MqttTransportClient(MqttTransportBase):
 
     def _remove_server(self, server_id: ServerId, server_name: ServerName) -> None:
         if server_id in self.server_list.get(server_name, {}):
-            self._read_stream_writers[server_id].close()
+            if server_id in self._read_stream_writers:
+                logger.debug(f"Closing stream writer for server_id: {server_id}")
+                self._read_stream_writers[server_id].close()
 
     def _handle_rpc_message(self, msg: mqtt.MQTTMessage) -> None:
         server_name = "/".join(msg.topic.split("/")[3:])
