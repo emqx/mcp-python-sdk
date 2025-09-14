@@ -12,9 +12,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 
 class Configuration:
@@ -75,29 +73,19 @@ class Server:
 
     async def initialize(self) -> None:
         """Initialize the server connection."""
-        command = (
-            shutil.which("npx")
-            if self.config["command"] == "npx"
-            else self.config["command"]
-        )
+        command = shutil.which("npx") if self.config["command"] == "npx" else self.config["command"]
         if command is None:
             raise ValueError("The command must be a valid string and cannot be None.")
 
         server_params = StdioServerParameters(
             command=command,
             args=self.config["args"],
-            env={**os.environ, **self.config["env"]}
-            if self.config.get("env")
-            else None,
+            env={**os.environ, **self.config["env"]} if self.config.get("env") else None,
         )
         try:
-            stdio_transport = await self.exit_stack.enter_async_context(
-                stdio_client(server_params)
-            )
+            stdio_transport = await self.exit_stack.enter_async_context(stdio_client(server_params))
             read, write = stdio_transport
-            session = await self.exit_stack.enter_async_context(
-                ClientSession(read, write)
-            )
+            session = await self.exit_stack.enter_async_context(ClientSession(read, write))
             await session.initialize()
             self.session = session
         except Exception as e:
@@ -122,8 +110,7 @@ class Server:
 
         for item in tools_response:
             if isinstance(item, tuple) and item[0] == "tools":
-                for tool in item[1]:
-                    tools.append(Tool(tool.name, tool.description, tool.inputSchema))
+                tools.extend(Tool(tool.name, tool.description, tool.inputSchema, tool.title) for tool in item[1])
 
         return tools
 
@@ -162,9 +149,7 @@ class Server:
 
             except Exception as e:
                 attempt += 1
-                logging.warning(
-                    f"Error executing tool: {e}. Attempt {attempt} of {retries}."
-                )
+                logging.warning(f"Error executing tool: {e}. Attempt {attempt} of {retries}.")
                 if attempt < retries:
                     logging.info(f"Retrying in {delay} seconds...")
                     await asyncio.sleep(delay)
@@ -187,9 +172,14 @@ class Tool:
     """Represents a tool with its properties and formatting."""
 
     def __init__(
-        self, name: str, description: str, input_schema: dict[str, Any]
+        self,
+        name: str,
+        description: str,
+        input_schema: dict[str, Any],
+        title: str | None = None,
     ) -> None:
         self.name: str = name
+        self.title: str | None = title
         self.description: str = description
         self.input_schema: dict[str, Any] = input_schema
 
@@ -202,19 +192,24 @@ class Tool:
         args_desc = []
         if "properties" in self.input_schema:
             for param_name, param_info in self.input_schema["properties"].items():
-                arg_desc = (
-                    f"- {param_name}: {param_info.get('description', 'No description')}"
-                )
+                arg_desc = f"- {param_name}: {param_info.get('description', 'No description')}"
                 if param_name in self.input_schema.get("required", []):
                     arg_desc += " (required)"
                 args_desc.append(arg_desc)
 
-        return f"""
-Tool: {self.name}
-Description: {self.description}
+        # Build the formatted output with title as a separate field
+        output = f"Tool: {self.name}\n"
+
+        # Add human-readable title if available
+        if self.title:
+            output += f"User-readable title: {self.title}\n"
+
+        output += f"""Description: {self.description}
 Arguments:
 {chr(10).join(args_desc)}
 """
+
+        return output
 
 
 class LLMClient:
@@ -243,7 +238,7 @@ class LLMClient:
         }
         payload = {
             "messages": messages,
-            "model": "llama-3.2-90b-vision-preview",
+            "model": "meta-llama/llama-4-scout-17b-16e-instruct",
             "temperature": 0.7,
             "max_tokens": 4096,
             "top_p": 1,
@@ -267,10 +262,7 @@ class LLMClient:
                 logging.error(f"Status code: {status_code}")
                 logging.error(f"Response details: {e.response.text}")
 
-            return (
-                f"I encountered an error: {error_message}. "
-                "Please try again or rephrase your request."
-            )
+            return f"I encountered an error: {error_message}. Please try again or rephrase your request."
 
 
 class ChatSession:
@@ -282,13 +274,9 @@ class ChatSession:
 
     async def cleanup_servers(self) -> None:
         """Clean up all servers properly."""
-        cleanup_tasks = []
-        for server in self.servers:
-            cleanup_tasks.append(asyncio.create_task(server.cleanup()))
-
-        if cleanup_tasks:
+        for server in reversed(self.servers):
             try:
-                await asyncio.gather(*cleanup_tasks, return_exceptions=True)
+                await server.cleanup()
             except Exception as e:
                 logging.warning(f"Warning during final cleanup: {e}")
 
@@ -313,18 +301,13 @@ class ChatSession:
                     tools = await server.list_tools()
                     if any(tool.name == tool_call["tool"] for tool in tools):
                         try:
-                            result = await server.execute_tool(
-                                tool_call["tool"], tool_call["arguments"]
-                            )
+                            result = await server.execute_tool(tool_call["tool"], tool_call["arguments"])
 
                             if isinstance(result, dict) and "progress" in result:
                                 progress = result["progress"]
                                 total = result["total"]
                                 percentage = (progress / total) * 100
-                                logging.info(
-                                    f"Progress: {progress}/{total} "
-                                    f"({percentage:.1f}%)"
-                                )
+                                logging.info(f"Progress: {progress}/{total} ({percentage:.1f}%)")
 
                             return f"Tool execution result: {result}"
                         except Exception as e:
@@ -399,9 +382,7 @@ class ChatSession:
 
                         final_response = self.llm_client.get_response(messages)
                         logging.info("\nFinal response: %s", final_response)
-                        messages.append(
-                            {"role": "assistant", "content": final_response}
-                        )
+                        messages.append({"role": "assistant", "content": final_response})
                     else:
                         messages.append({"role": "assistant", "content": llm_response})
 
@@ -417,10 +398,7 @@ async def main() -> None:
     """Initialize and run the chat session."""
     config = Configuration()
     server_config = config.load_config("servers_config.json")
-    servers = [
-        Server(name, srv_config)
-        for name, srv_config in server_config["mcpServers"].items()
-    ]
+    servers = [Server(name, srv_config) for name, srv_config in server_config["mcpServers"].items()]
     llm_client = LLMClient(config.llm_api_key)
     chat_session = ChatSession(servers, llm_client)
     await chat_session.start()

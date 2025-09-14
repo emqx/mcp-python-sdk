@@ -49,9 +49,7 @@ async def test_logging_callback():
 
     # Create a message handler to catch exceptions
     async def message_handler(
-        message: RequestResponder[types.ServerRequest, types.ClientResult]
-        | types.ServerNotification
-        | Exception,
+        message: RequestResponder[types.ServerRequest, types.ClientResult] | types.ServerNotification | Exception,
     ) -> None:
         if isinstance(message, Exception):
             raise message
@@ -78,6 +76,8 @@ async def test_logging_callback():
         )
         assert log_result.isError is False
         assert len(logging_collector.log_messages) == 1
-        assert logging_collector.log_messages[0] == LoggingMessageNotificationParams(
-            level="info", logger="test_logger", data="Test log message"
-        )
+        # Create meta object with related_request_id added dynamically
+        log = logging_collector.log_messages[0]
+        assert log.level == "info"
+        assert log.logger == "test_logger"
+        assert log.data == "Test log message"

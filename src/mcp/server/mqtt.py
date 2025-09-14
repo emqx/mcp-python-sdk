@@ -1,39 +1,56 @@
 """
 This module implements the MQTT transport for the MCP server.
 """
-from uuid import uuid4
-from mcp.shared.mqtt import MqttTransportBase, MqttOptions, QOS, PROPERTY_K_MQTT_CLIENT_ID, MCP_SERVER_NAME
-import asyncio
-import anyio.to_thread as anyio_to_thread
-import anyio.from_thread as anyio_from_thread
-import json
-import traceback
-import mcp.shared.mqtt_topic as mqtt_topic
-import paho.mqtt.client as mqtt
-import logging
-from paho.mqtt.reasoncodes import ReasonCode
-from paho.mqtt.properties import Properties
-from paho.mqtt.subscribeoptions import SubscribeOptions
-import anyio
-from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
-from typing import Any, TypeAlias, Callable, Awaitable
-import mcp.types as types
 
-RcvStream : TypeAlias = MemoryObjectReceiveStream[types.JSONRPCMessage]
-SndStream : TypeAlias = MemoryObjectSendStream[types.JSONRPCMessage]
-RcvStreamEx : TypeAlias = MemoryObjectReceiveStream[types.JSONRPCMessage | Exception]
-SndStreamEX : TypeAlias = MemoryObjectSendStream[types.JSONRPCMessage | Exception]
-ServerSessionRun : TypeAlias = Callable[[RcvStreamEx, SndStream], Awaitable[Any]]
+import asyncio
+import json
+import logging
+import traceback
+from collections.abc import Awaitable, Callable
+from typing import Any, TypeAlias
+from uuid import uuid4
+
+import anyio
+import anyio.from_thread as anyio_from_thread
+import anyio.to_thread as anyio_to_thread
+import paho.mqtt.client as mqtt
+from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
+from paho.mqtt.properties import Properties
+from paho.mqtt.reasoncodes import ReasonCode
+from paho.mqtt.subscribeoptions import SubscribeOptions
+
+import mcp.shared.mqtt_topic as mqtt_topic
+import mcp.types as types
+from mcp.shared.message import SessionMessage
+from mcp.shared.mqtt import MCP_SERVER_NAME, PROPERTY_K_MQTT_CLIENT_ID, QOS, MqttOptions, MqttTransportBase
+
+# Raw MQTT streams (JSONRPCMessage)
+RcvStream: TypeAlias = MemoryObjectReceiveStream[types.JSONRPCMessage]
+SndStream: TypeAlias = MemoryObjectSendStream[types.JSONRPCMessage]
+RcvStreamEx: TypeAlias = MemoryObjectReceiveStream[types.JSONRPCMessage | Exception]
+SndStreamEX: TypeAlias = MemoryObjectSendStream[types.JSONRPCMessage | Exception]
+
+# Session streams (SessionMessage)
+SessionRcvStream: TypeAlias = MemoryObjectReceiveStream[SessionMessage]
+SessionSndStream: TypeAlias = MemoryObjectSendStream[SessionMessage]
+SessionRcvStreamEx: TypeAlias = MemoryObjectReceiveStream[SessionMessage | Exception]
+SessionSndStreamEx: TypeAlias = MemoryObjectSendStream[SessionMessage | Exception]
+
+ServerSessionRun: TypeAlias = Callable[[SessionRcvStreamEx, SessionSndStream], Awaitable[Any]]
 
 logger = logging.getLogger(__name__)
 
-class MqttTransportServer(MqttTransportBase):
 
-    def __init__(self, server_session_run: ServerSessionRun, server_name: str,
-                 server_description: str,
-                 server_meta: dict[str, Any],
-                 client_id: str | None = None,
-                 mqtt_options: MqttOptions = MqttOptions()):
+class MqttTransportServer(MqttTransportBase):
+    def __init__(
+        self,
+        server_session_run: ServerSessionRun,
+        server_name: str,
+        server_description: str,
+        server_meta: dict[str, Any],
+        client_id: str | None = None,
+        mqtt_options: MqttOptions = MqttOptions(),
+    ):
         uuid = uuid4().hex
         mqtt_clientid = client_id if client_id else uuid
         self.server_id = mqtt_clientid
@@ -41,19 +58,29 @@ class MqttTransportServer(MqttTransportBase):
         self.server_description = server_description
         self.server_meta = server_meta
         self.server_session_run = server_session_run
-        super().__init__("mcp-server", mqtt_clientid = mqtt_clientid,
-                         mqtt_options = mqtt_options,
-                         disconnected_msg = None,
-                         disconnected_msg_retain = True)
+        super().__init__(
+            "mcp-server",
+            mqtt_clientid=mqtt_clientid,
+            mqtt_options=mqtt_options,
+            disconnected_msg=None,
+            disconnected_msg_retain=True,
+        )
 
     def get_presence_topic(self) -> str:
         return mqtt_topic.get_server_presence_topic(self.server_id, self.server_name)
 
-    def _on_connect(self, client: mqtt.Client, userdata: Any, connect_flags: mqtt.ConnectFlags, reason_code : ReasonCode, properties: Properties | None):
+    def _on_connect(
+        self,
+        client: mqtt.Client,
+        userdata: Any,
+        connect_flags: mqtt.ConnectFlags,
+        reason_code: ReasonCode,
+        properties: Properties | None,
+    ):
         super()._on_connect(client, userdata, connect_flags, reason_code, properties)
         if reason_code == 0:
             if properties and hasattr(properties, "UserProperty"):
-                user_properties: dict[str, Any] = dict(properties.UserProperty) # type: ignore
+                user_properties: dict[str, Any] = dict(properties.UserProperty)  # type: ignore
                 if MCP_SERVER_NAME in user_properties:
                     broker_suggested_server_name = user_properties[MCP_SERVER_NAME]
                     self.server_name = broker_suggested_server_name
@@ -67,14 +94,11 @@ class MqttTransportServer(MqttTransportBase):
             online_msg = types.JSONRPCMessage(
                 types.JSONRPCNotification(
                     jsonrpc="2.0",
-                    method = "notifications/server/online",
-                    params = {
-                        "description": self.server_description,
-                        "meta": self.server_meta
-                    }
-                ))
-            self.publish_json_rpc_message(
-                self.get_presence_topic(), message=online_msg, retain=True)
+                    method="notifications/server/online",
+                    params={"description": self.server_description, "meta": self.server_meta},
+                )
+            )
+            self.publish_json_rpc_message(self.get_presence_topic(), message=online_msg, retain=True)
 
     def _on_message(self, client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage):
         logger.debug(f"Received message on topic {msg.topic}: {msg.payload.decode()}")
@@ -90,32 +114,38 @@ class MqttTransportServer(MqttTransportBase):
             case _:
                 logger.error(f"Received message on unexpected topic: {msg.topic}")
 
-    def _on_subscribe(self, client: mqtt.Client, userdata: Any, mid: int,
-                      reason_code_list: list[ReasonCode], properties: Properties | None):
+    def _on_subscribe(
+        self,
+        client: mqtt.Client,
+        userdata: Any,
+        mid: int,
+        reason_code_list: list[ReasonCode],
+        properties: Properties | None,
+    ):
         if mid in userdata.get("pending_subs", {}):
             mcp_client_id, msg, rpc_msg_id = userdata["pending_subs"].pop(mid)
             ## only create session if all topic subscribed successfully
-            if all([rc.value == QOS for rc in reason_code_list]):
+            if all(rc.value == QOS for rc in reason_code_list):
                 logger.debug(f"Subscribed to topics for mcp_client_id: {mcp_client_id}")
                 anyio_from_thread.run(self.create_session, mcp_client_id, msg)
             else:
-                logger.error(f"Failed to subscribe to topics for mcp_client_id: {mcp_client_id}, reason_codes: {reason_code_list}")
+                logger.error(
+                    f"Failed to subscribe to topics for mcp_client_id: {mcp_client_id}, "
+                    f"reason_codes: {reason_code_list}"
+                )
                 err = types.JSONRPCError(
                     jsonrpc="2.0",
                     id=rpc_msg_id,
-                    error=types.ErrorData(
-                        code=types.INTERNAL_ERROR,
-                        message="Failed to subscribe to client topics"
-                    )
+                    error=types.ErrorData(code=types.INTERNAL_ERROR, message="Failed to subscribe to client topics"),
                 )
                 self.publish_json_rpc_message(
                     mqtt_topic.get_rpc_topic(mcp_client_id, self.server_id, self.server_name),
-                    message = types.JSONRPCMessage(err)
+                    message=types.JSONRPCMessage(err),
                 )
 
     def handle_server_contorl_message(self, msg: mqtt.MQTTMessage):
         if msg.properties and hasattr(msg.properties, "UserProperty"):
-            user_properties: dict[str, Any] = dict(msg.properties.UserProperty) # type: ignore
+            user_properties: dict[str, Any] = dict(msg.properties.UserProperty)  # type: ignore
             if PROPERTY_K_MQTT_CLIENT_ID in user_properties:
                 mcp_client_id = user_properties[PROPERTY_K_MQTT_CLIENT_ID]
                 if mcp_client_id in self._read_stream_writers:
@@ -169,17 +199,32 @@ class MqttTransportServer(MqttTransportBase):
 
     async def create_session(self, mcp_client_id: str, msg: mqtt.MQTTMessage):
         ## Streams are used to communicate between the MqttTransportServer and the MCPSession:
-        ## 1. (msg) --> MqttBroker --> MqttTransportServer -->[read_stream_writer]-->[read_stream]--> MCPSession
-        ## 2. MqttBroker <-- MqttTransportServer <--[write_stream_reader]--[write_stream]-- MCPSession <-- (msg)
-        read_stream: RcvStreamEx
-        read_stream_writer: SndStreamEX
-        write_stream: SndStream
-        write_stream_reader: RcvStream
-        read_stream_writer, read_stream = anyio.create_memory_object_stream(0) # type: ignore
-        write_stream, write_stream_reader = anyio.create_memory_object_stream(0) # type: ignore
-        self._read_stream_writers[mcp_client_id] = read_stream_writer
-        self._task_group.start_soon(self.server_session_run, read_stream, write_stream)
-        self._task_group.start_soon(self._receieved_from_session, mcp_client_id, write_stream_reader)
+        ## 1. MQTT --> Server -->[raw_read]-- conversion -->[session_read]--> MCPSession
+        ## 2. MQTT <-- Server <--[raw_write]<-- conversion <--[session_write]-- MCPSession
+
+        # Create raw MQTT streams (JSONRPCMessage)
+        raw_read_stream_writer: SndStreamEX
+        raw_read_stream: RcvStreamEx
+        raw_write_stream: SndStream
+        raw_write_stream_reader: RcvStream
+        raw_read_stream_writer, raw_read_stream = anyio.create_memory_object_stream(0)  # type: ignore
+        raw_write_stream, raw_write_stream_reader = anyio.create_memory_object_stream(0)  # type: ignore
+
+        # Create session streams (SessionMessage)
+        session_read_stream_writer: SessionSndStreamEx
+        session_read_stream: SessionRcvStreamEx
+        session_write_stream: SessionSndStream
+        session_write_stream_reader: SessionRcvStream
+        session_read_stream_writer, session_read_stream = anyio.create_memory_object_stream(0)  # type: ignore
+        session_write_stream, session_write_stream_reader = anyio.create_memory_object_stream(0)  # type: ignore
+
+        # Start conversion tasks
+        self._task_group.start_soon(self._convert_jsonrpc_to_session, raw_read_stream, session_read_stream_writer)
+        self._task_group.start_soon(self._convert_session_to_jsonrpc, session_write_stream_reader, raw_write_stream)
+
+        self._read_stream_writers[mcp_client_id] = raw_read_stream_writer
+        self._task_group.start_soon(self.server_session_run, session_read_stream, session_write_stream)
+        self._task_group.start_soon(self._receieved_from_session, mcp_client_id, raw_write_stream_reader)
         logger.debug(f"Created new session for mcp_client_id: {mcp_client_id}")
         await self._send_message_to_session(mcp_client_id, msg)
 
@@ -199,7 +244,10 @@ class MqttTransportServer(MqttTransportBase):
         topic_filters = [
             (mqtt_topic.get_client_presence_topic(mcp_client_id), SubscribeOptions(qos=QOS)),
             (mqtt_topic.get_client_capability_change_topic(mcp_client_id), SubscribeOptions(qos=QOS)),
-            (mqtt_topic.get_rpc_topic(mcp_client_id, self.server_id, self.server_name), SubscribeOptions(qos=QOS, noLocal=True))
+            (
+                mqtt_topic.get_rpc_topic(mcp_client_id, self.server_id, self.server_name),
+                SubscribeOptions(qos=QOS, noLocal=True),
+            ),
         ]
         ret, mid = self.client.subscribe(topic=topic_filters)
         if ret != mqtt.MQTT_ERR_SUCCESS:
@@ -225,7 +273,7 @@ class MqttTransportServer(MqttTransportBase):
             logger.error(f"Failed to send msg to session for mcp_client_id: {mcp_client_id}, exception: {exc}")
             traceback.print_exc()
             ## TODO: the session does not handle exceptions for now
-            #await read_stream_writer.send(exc)
+            # await read_stream_writer.send(exc)
 
     async def _receieved_from_session(self, mcp_client_id: str, write_stream_reader: RcvStream):
         async with write_stream_reader:
@@ -238,7 +286,7 @@ class MqttTransportServer(MqttTransportBase):
                         logger.warning("Resource updates should not be sent from the session. Ignoring.")
                     case _:
                         topic = mqtt_topic.get_rpc_topic(mcp_client_id, self.server_id, self.server_name)
-                        self.publish_json_rpc_message(topic, message = msg)
+                        self.publish_json_rpc_message(topic, message=msg)
         # cleanup
         if mcp_client_id in self._read_stream_writers:
             logger.debug(f"Removing session for mcp_client_id: {mcp_client_id}")
@@ -250,35 +298,65 @@ class MqttTransportServer(MqttTransportBase):
         topic_filters = [
             mqtt_topic.get_client_presence_topic(mcp_client_id),
             mqtt_topic.get_client_capability_change_topic(mcp_client_id),
-            mqtt_topic.get_rpc_topic(mcp_client_id, self.server_id, self.server_name)
+            mqtt_topic.get_rpc_topic(mcp_client_id, self.server_id, self.server_name),
         ]
         self.client.unsubscribe(topic=topic_filters)
 
         logger.debug(f"Session stream closed for mcp_client_id: {mcp_client_id}")
 
+    async def _convert_jsonrpc_to_session(
+        self,
+        jsonrpc_stream: RcvStreamEx,
+        session_writer: SessionSndStreamEx,
+    ) -> None:
+        """Convert JSONRPCMessage stream to SessionMessage stream."""
+        async with jsonrpc_stream, session_writer:
+            async for message in jsonrpc_stream:
+                if isinstance(message, Exception):
+                    await session_writer.send(message)
+                else:
+                    session_message = SessionMessage(message=message)
+                    await session_writer.send(session_message)
+
+    async def _convert_session_to_jsonrpc(
+        self,
+        session_stream: SessionRcvStream,
+        jsonrpc_writer: SndStream,
+    ) -> None:
+        """Convert SessionMessage stream to JSONRPCMessage stream."""
+        async with session_stream, jsonrpc_writer:
+            async for session_message in session_stream:
+                await jsonrpc_writer.send(session_message.message)
+
+
 async def start_mqtt(
-        server_session_run: ServerSessionRun, server_name: str,
-        server_description: str,
-        server_meta: dict[str, Any],
-        client_id: str | None = None,
-        mqtt_options: MqttOptions = MqttOptions()):
+    server_session_run: ServerSessionRun,
+    server_name: str,
+    server_description: str,
+    server_meta: dict[str, Any],
+    client_id: str | None = None,
+    mqtt_options: MqttOptions = MqttOptions(),
+):
     async with MqttTransportServer(
         server_session_run,
-        server_name = server_name,
+        server_name=server_name,
         server_description=server_description,
-        server_meta = server_meta,
-        client_id = client_id,
-        mqtt_options = mqtt_options
+        server_meta=server_meta,
+        client_id=client_id,
+        mqtt_options=mqtt_options,
     ) as mqtt_trans:
+
         def start():
             mqtt_trans.connect()
             mqtt_trans.client.loop_forever()
+
         try:
             await anyio_to_thread.run_sync(start)
         except asyncio.CancelledError:
             logger.debug("MQTT transport (MCP server) got cancelled")
         except Exception as exc:
             logger.error(f"MQTT transport (MCP server) failed with exception: {exc}")
+
 
 def validate_server_name(name: str):
     if "/" not in name:

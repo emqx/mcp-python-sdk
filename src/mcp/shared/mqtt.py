@@ -2,21 +2,25 @@
 MQTT Transport Base Module
 
 """
-from types import TracebackType
-import paho.mqtt.client as mqtt
+
 import logging
-from paho.mqtt.reasoncodes import ReasonCode
-from paho.mqtt.enums import CallbackAPIVersion
-from paho.mqtt.properties import Properties
-from paho.mqtt.packettypes import PacketTypes
+from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable
+from types import TracebackType
+from typing import Any, Literal, TypeAlias
+
 import anyio
 import anyio.from_thread as anyio_from_thread
+import paho.mqtt.client as mqtt
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
+from paho.mqtt.enums import CallbackAPIVersion
+from paho.mqtt.packettypes import PacketTypes
+from paho.mqtt.properties import Properties
+from paho.mqtt.reasoncodes import ReasonCode
 from pydantic import BaseModel, SecretStr
-from typing import Literal, Optional, Any, TypeAlias, Callable, Awaitable
-import mcp.types as types
 from typing_extensions import Self
-from abc import ABC, abstractmethod
+
+import mcp.types as types
 
 DEFAULT_LOG_FORMAT = "%(asctime)s - %(message)s"
 QOS = 0
@@ -27,44 +31,47 @@ PROPERTY_K_MCP_COMPONENT = "MCP-COMPONENT-TYPE"
 PROPERTY_K_MQTT_CLIENT_ID = "MCP-MQTT-CLIENT-ID"
 logger = logging.getLogger(__name__)
 
-RcvStream : TypeAlias = MemoryObjectReceiveStream[types.JSONRPCMessage]
-SndStream : TypeAlias = MemoryObjectSendStream[types.JSONRPCMessage]
-RcvStreamEx : TypeAlias = MemoryObjectReceiveStream[types.JSONRPCMessage | Exception]
-SndStreamEX : TypeAlias = MemoryObjectSendStream[types.JSONRPCMessage | Exception]
-ServerRun : TypeAlias = Callable[[RcvStreamEx, SndStream], Awaitable[Any]]
+RcvStream: TypeAlias = MemoryObjectReceiveStream[types.JSONRPCMessage]
+SndStream: TypeAlias = MemoryObjectSendStream[types.JSONRPCMessage]
+RcvStreamEx: TypeAlias = MemoryObjectReceiveStream[types.JSONRPCMessage | Exception]
+SndStreamEX: TypeAlias = MemoryObjectSendStream[types.JSONRPCMessage | Exception]
+ServerRun: TypeAlias = Callable[[RcvStreamEx, SndStream], Awaitable[Any]]
+
 
 class MqttOptions(BaseModel):
     host: str = "localhost"
     port: int = 1883
-    transport: Literal['tcp', 'websockets', 'unix'] = 'tcp'
+    transport: Literal["tcp", "websockets", "unix"] = "tcp"
     keepalive: int = 60
-    bind_address: str = ''
+    bind_address: str = ""
     bind_port: int = 0
-    username: Optional[str] = None
-    password: Optional[SecretStr] = None
+    username: str | None = None
+    password: SecretStr | None = None
     tls_enabled: bool = False
-    tls_version: Optional[int] = None
+    tls_version: int | None = None
     tls_insecure: bool = False
-    ca_certs: Optional[str] = None
-    certfile: Optional[str] = None
-    keyfile: Optional[str] = None
-    ciphers: Optional[str] = None
-    keyfile_password: Optional[str] = None
-    alpn_protocols: Optional[list[str]] = None
-    websocket_path: str = '/mqtt'
-    websocket_headers: Optional[dict[str, str]] = None
+    ca_certs: str | None = None
+    certfile: str | None = None
+    keyfile: str | None = None
+    ciphers: str | None = None
+    keyfile_password: str | None = None
+    alpn_protocols: list[str] | None = None
+    websocket_path: str = "/mqtt"
+    websocket_headers: dict[str, str] | None = None
+    verify_connack_properties: bool = True
+
 
 class MqttTransportBase(ABC):
-    _read_stream_writers: dict[
-        str, SndStreamEX
-    ]
+    _read_stream_writers: dict[str, SndStreamEX]
 
-    def __init__(self, 
-                 mcp_component_type: Literal["mcp-client", "mcp-server"],
-                 mqtt_clientid: str | None = None,
-                 mqtt_options: MqttOptions = MqttOptions(),
-                 disconnected_msg: types.JSONRPCMessage | None = None,
-                 disconnected_msg_retain: bool = True):
+    def __init__(
+        self,
+        mcp_component_type: Literal["mcp-client", "mcp-server"],
+        mqtt_clientid: str | None = None,
+        mqtt_options: MqttOptions = MqttOptions(),
+        disconnected_msg: types.JSONRPCMessage | None = None,
+        disconnected_msg_retain: bool = True,
+    ):
         self._read_stream_writers = {}
         self._last_connect_fail_reason = None
         self.mqtt_clientid = mqtt_clientid
@@ -74,27 +81,28 @@ class MqttTransportBase(ABC):
         self.disconnected_msg_retain = disconnected_msg_retain
         client = mqtt.Client(
             callback_api_version=CallbackAPIVersion.VERSION2,
-            client_id=mqtt_clientid, protocol=mqtt.MQTTv5,
+            client_id=mqtt_clientid,
+            protocol=mqtt.MQTTv5,
             userdata={},
             transport=mqtt_options.transport,
-            reconnect_on_failure=True
+            reconnect_on_failure=True,
         )
-        client.reconnect_delay_set(
-            min_delay=1, max_delay=120
+        client.reconnect_delay_set(min_delay=1, max_delay=120)
+        client.username_pw_set(
+            mqtt_options.username, mqtt_options.password.get_secret_value() if mqtt_options.password else None
         )
-        client.username_pw_set(mqtt_options.username, mqtt_options.password.get_secret_value() if mqtt_options.password else None)
         if mqtt_options.tls_enabled:
-            client.tls_set( # type: ignore
+            client.tls_set(  # type: ignore
                 ca_certs=mqtt_options.ca_certs,
                 certfile=mqtt_options.certfile,
                 keyfile=mqtt_options.keyfile,
                 tls_version=mqtt_options.tls_version,
                 ciphers=mqtt_options.ciphers,
                 keyfile_password=mqtt_options.keyfile_password,
-                alpn_protocols=mqtt_options.alpn_protocols
+                alpn_protocols=mqtt_options.alpn_protocols,
             )
             client.tls_insecure_set(mqtt_options.tls_insecure)
-        if mqtt_options.transport == 'websockets':
+        if mqtt_options.transport == "websockets":
             client.ws_set_options(path=mqtt_options.websocket_path, headers=mqtt_options.websocket_headers)
         client.on_connect = self._on_connect
         client.on_message = self._on_message
@@ -105,13 +113,15 @@ class MqttTransportBase(ABC):
         ## responsibility to clean the retained presence message and send the
         ## last will message on the changed presence topic.
         client.will_set(
-            topic = self.get_presence_topic(),
-            payload = disconnected_msg.model_dump_json() if disconnected_msg else None,
-            qos = QOS,
-            retain = disconnected_msg_retain,
-            properties = self.get_publish_properties(),
+            topic=self.get_presence_topic(),
+            payload=disconnected_msg.model_dump_json() if disconnected_msg else None,
+            qos=QOS,
+            retain=disconnected_msg_retain,
+            properties=self.get_publish_properties(),
         )
-        logger.info(f"MCP component type: {mcp_component_type}, MQTT clientid: {mqtt_clientid}, MQTT settings: {mqtt_options}")
+        logger.info(
+            f"MCP component type: {mcp_component_type}, MQTT clientid: {mqtt_clientid}, MQTT settings: {mqtt_options}"
+        )
         self.client = client
 
     async def __aenter__(self) -> Self:
@@ -129,11 +139,19 @@ class MqttTransportBase(ABC):
         self._task_group.cancel_scope.cancel()
         return await self._task_group.__aexit__(exc_type, exc_val, exc_tb)
 
-    def _on_connect(self, client: mqtt.Client, userdata: Any, connect_flags: mqtt.ConnectFlags, reason_code: ReasonCode, properties: Properties | None):
+    def _on_connect(
+        self,
+        client: mqtt.Client,
+        userdata: Any,
+        connect_flags: mqtt.ConnectFlags,
+        reason_code: ReasonCode,
+        properties: Properties | None,
+    ):
         if reason_code == 0:
             logger.debug(f"Connected to MQTT broker_host at {self.mqtt_options.host}:{self.mqtt_options.port}")
-            self.assert_property(properties, "RetainAvailable", 1)
-            self.assert_property(properties, "WildcardSubscriptionAvailable", 1)
+            if self.mqtt_options.verify_connack_properties:
+                self.assert_property(properties, "RetainAvailable", 1)
+                self.assert_property(properties, "WildcardSubscriptionAvailable", 1)
         else:
             self._last_connect_fail_reason = reason_code
             logger.error(f"Failed to connect, return code {reason_code}")
@@ -141,8 +159,14 @@ class MqttTransportBase(ABC):
     def _on_message(self, client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage):
         pass
 
-    def _on_subscribe(self, client: mqtt.Client, userdata: Any, mid: int,
-                      reason_code_list: list[ReasonCode], properties: Properties | None):
+    def _on_subscribe(
+        self,
+        client: mqtt.Client,
+        userdata: Any,
+        mid: int,
+        reason_code_list: list[ReasonCode],
+        properties: Properties | None,
+    ):
         pass
 
     def is_connected(self) -> bool:
@@ -151,32 +175,30 @@ class MqttTransportBase(ABC):
     def get_last_connect_fail_reason(self) -> ReasonCode | None:
         return self._last_connect_fail_reason
 
-    def publish_json_rpc_message(self, topic: str, message: types.JSONRPCMessage | None,
-                                 retain: bool = False):
+    def publish_json_rpc_message(self, topic: str, message: types.JSONRPCMessage | None, retain: bool = False):
         props = self.get_publish_properties()
         payload = message.model_dump_json(by_alias=True, exclude_none=True) if message else None
-        self.client.publish(topic=topic, payload=payload, qos=QOS, retain=retain, properties=props)
+        result = self.client.publish(topic=topic, payload=payload, qos=QOS, retain=retain, properties=props)
+        return result
 
     def get_publish_properties(self):
         props = Properties(PacketTypes.PUBLISH)
         props.UserProperty = [
             (PROPERTY_K_MCP_COMPONENT, self.mcp_component_type),
-            (PROPERTY_K_MQTT_CLIENT_ID, self.mqtt_clientid)
+            (PROPERTY_K_MQTT_CLIENT_ID, self.mqtt_clientid),
         ]
         return props
 
     def connect(self):
         logger.debug("Setting up MQTT connection")
         props = Properties(PacketTypes.CONNECT)
-        props.UserProperty = [
-            (PROPERTY_K_MCP_COMPONENT, self.mcp_component_type)
-        ]
+        props.UserProperty = [(PROPERTY_K_MCP_COMPONENT, self.mcp_component_type)]
         return self.client.connect(
-            host = self.mqtt_options.host,
-            port = self.mqtt_options.port,
-            keepalive = self.mqtt_options.keepalive,
-            bind_address = self.mqtt_options.bind_address,
-            bind_port = self.mqtt_options.bind_port,
+            host=self.mqtt_options.host,
+            port=self.mqtt_options.port,
+            keepalive=self.mqtt_options.keepalive,
+            bind_address=self.mqtt_options.bind_address,
+            bind_port=self.mqtt_options.bind_port,
             clean_start=True,
             properties=props,
         )
@@ -194,9 +216,7 @@ class MqttTransportBase(ABC):
 
     async def stop_mqtt(self):
         self.publish_json_rpc_message(
-            self.get_presence_topic(),
-            message = self.disconnected_msg,
-            retain = self.disconnected_msg_retain
+            self.get_presence_topic(), message=self.disconnected_msg, retain=self.disconnected_msg_retain
         )
         self.client.disconnect()
         self.client.loop_stop()
@@ -205,11 +225,13 @@ class MqttTransportBase(ABC):
         self._read_stream_writers = {}
         logger.debug("Disconnected from MQTT broker_host")
 
+
 def get_property(properties: Properties | None, property_name: str):
     if properties and hasattr(properties, property_name):
         return getattr(properties, property_name)
     else:
         return False
+
 
 def configure_logging(
     level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = "INFO",
