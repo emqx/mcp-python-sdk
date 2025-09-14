@@ -1,61 +1,70 @@
 """
 This module implements the MQTT transport for the MCP server.
 """
-from contextlib import AsyncExitStack
-import json
-from uuid import uuid4
-from datetime import timedelta
-import random
-from pydantic import AnyUrl, BaseModel
-from mcp.client.session import ClientSession, SamplingFnT, ListRootsFnT, LoggingFnT, MessageHandlerFnT
-from mcp.shared.exceptions import McpError
-from mcp.shared.mqtt import MqttTransportBase, MqttOptions, QOS, MCP_SERVER_NAME_FILTERS
+
 import asyncio
-import anyio.to_thread as anyio_to_thread
-import anyio.from_thread as anyio_from_thread
-import traceback
-import mcp.shared.mqtt_topic as mqtt_topic
-import paho.mqtt.client as mqtt
+import json
 import logging
-from paho.mqtt.reasoncodes import ReasonCode
-from paho.mqtt.properties import Properties
-from paho.mqtt.subscribeoptions import SubscribeOptions
+import random
+import traceback
+from collections.abc import Awaitable, Callable
+from contextlib import AsyncExitStack
+from datetime import timedelta
+from typing import Any, Literal, TypeAlias
+from uuid import uuid4
+
 import anyio
+import anyio.from_thread as anyio_from_thread
+import anyio.to_thread as anyio_to_thread
+import paho.mqtt.client as mqtt
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
-from typing import Any, Literal, TypeAlias, Callable, Awaitable
+from paho.mqtt.properties import Properties
+from paho.mqtt.reasoncodes import ReasonCode
+from paho.mqtt.subscribeoptions import SubscribeOptions
+from pydantic import AnyUrl, BaseModel
+
+import mcp.shared.mqtt_topic as mqtt_topic
 import mcp.types as types
+from mcp.client.session import ClientSession, ElicitationFnT, ListRootsFnT, LoggingFnT, MessageHandlerFnT, SamplingFnT
+from mcp.shared.exceptions import McpError
+from mcp.shared.message import SessionMessage
+from mcp.shared.mqtt import MCP_SERVER_NAME_FILTERS, QOS, MqttOptions, MqttTransportBase
 
-RcvStream : TypeAlias = MemoryObjectReceiveStream[types.JSONRPCMessage]
-SndStream : TypeAlias = MemoryObjectSendStream[types.JSONRPCMessage]
-RcvStreamEx : TypeAlias = MemoryObjectReceiveStream[types.JSONRPCMessage | Exception]
-SndStreamEX : TypeAlias = MemoryObjectSendStream[types.JSONRPCMessage | Exception]
-ServerRun : TypeAlias = Callable[[RcvStreamEx, SndStream], Awaitable[Any]]
+RcvStream: TypeAlias = MemoryObjectReceiveStream[types.JSONRPCMessage]
+SndStream: TypeAlias = MemoryObjectSendStream[types.JSONRPCMessage]
+RcvStreamEx: TypeAlias = MemoryObjectReceiveStream[types.JSONRPCMessage | Exception]
+SndStreamEX: TypeAlias = MemoryObjectSendStream[types.JSONRPCMessage | Exception]
+ServerRun: TypeAlias = Callable[[RcvStreamEx, SndStream], Awaitable[Any]]
 
-ServerName : TypeAlias = str
-ServerId : TypeAlias = str
-InitializeResult : TypeAlias = Literal["ok"] | Literal["already_connected"] | tuple[Literal["error"], str]
-ConnectResult : TypeAlias = tuple[Literal["ok"], types.InitializeResult] | tuple[Literal["error"], Any]
+ServerName: TypeAlias = str
+ServerId: TypeAlias = str
+InitializeResult: TypeAlias = Literal["ok"] | Literal["already_connected"] | tuple[Literal["error"], str]
+ConnectResult: TypeAlias = tuple[Literal["ok"], types.InitializeResult] | tuple[Literal["error"], Any]
 
 logger = logging.getLogger(__name__)
+
 
 class ServerDefinition(BaseModel):
     description: str
     meta: dict[str, Any] = {}
+
 
 class ServerOnlineNotification(BaseModel):
     jsonrpc: Literal["2.0"]
     method: str = "notifications/server/online"
     params: ServerDefinition
 
+
 class MqttClientSession(ClientSession):
     def __init__(
         self,
         server_id: ServerId,
         server_name: ServerName,
-        read_stream: MemoryObjectReceiveStream[types.JSONRPCMessage | Exception],
-        write_stream: MemoryObjectSendStream[types.JSONRPCMessage],
+        read_stream: MemoryObjectReceiveStream[SessionMessage | Exception],
+        write_stream: MemoryObjectSendStream[SessionMessage],
         read_timeout_seconds: timedelta | None = None,
         sampling_callback: SamplingFnT | None = None,
+        elicitation_callback: ElicitationFnT | None = None,
         list_roots_callback: ListRootsFnT | None = None,
         logging_callback: LoggingFnT | None = None,
         message_handler: MessageHandlerFnT | None = None,
@@ -65,6 +74,7 @@ class MqttClientSession(ClientSession):
             write_stream,
             read_timeout_seconds,
             sampling_callback,
+            elicitation_callback,
             list_roots_callback,
             logging_callback,
             message_handler,
@@ -73,17 +83,19 @@ class MqttClientSession(ClientSession):
         self.server_name = server_name
         self.server_info: types.InitializeResult | None = None
 
-class MqttTransportClient(MqttTransportBase):
 
-    def __init__(self,
-                 mcp_client_name: str,
-                 client_id: str | None = None,
-                 server_name_filter: str | list[str] = '#',
-                 auto_connect_to_mcp_server: bool = False,
-                 on_mcp_connect: Callable[["MqttTransportClient", ServerName, ConnectResult], Awaitable[Any]] | None = None,
-                 on_mcp_disconnect: Callable[["MqttTransportClient", ServerName], Awaitable[Any]] | None = None,
-                 on_mcp_server_discovered: Callable[["MqttTransportClient", ServerName], Awaitable[Any]] | None = None,
-                 mqtt_options: MqttOptions = MqttOptions()):
+class MqttTransportClient(MqttTransportBase):
+    def __init__(
+        self,
+        mcp_client_name: str,
+        client_id: str | None = None,
+        server_name_filter: str | list[str] = "#",
+        auto_connect_to_mcp_server: bool = False,
+        on_mcp_connect: Callable[["MqttTransportClient", ServerName, ConnectResult], Awaitable[Any]] | None = None,
+        on_mcp_disconnect: Callable[["MqttTransportClient", ServerName], Awaitable[Any]] | None = None,
+        on_mcp_server_discovered: Callable[["MqttTransportClient", ServerName], Awaitable[Any]] | None = None,
+        mqtt_options: MqttOptions = MqttOptions(),
+    ):
         uuid = uuid4().hex
         mqtt_clientid = client_id if client_id else uuid
         self._current_server_id: dict[ServerName, ServerId] = {}
@@ -102,15 +114,15 @@ class MqttTransportClient(MqttTransportBase):
         self.client_capability_change_topic = mqtt_topic.get_client_capability_change_topic(self.mcp_client_id)
         ## Send disconnected notification when disconnects
         self._disconnected_msg = types.JSONRPCMessage(
-            types.JSONRPCNotification(
-                jsonrpc="2.0",
-                method = "notifications/disconnected"
-            )
+            types.JSONRPCNotification(jsonrpc="2.0", method="notifications/disconnected")
         )
-        super().__init__("mcp-client", mqtt_clientid = mqtt_clientid,
-                         mqtt_options = mqtt_options,
-                         disconnected_msg = self._disconnected_msg,
-                         disconnected_msg_retain = False)
+        super().__init__(
+            "mcp-client",
+            mqtt_clientid=mqtt_clientid,
+            mqtt_options=mqtt_options,
+            disconnected_msg=self._disconnected_msg,
+            disconnected_msg_retain=False,
+        )
 
     def get_presence_topic(self) -> str:
         return mqtt_topic.get_client_presence_topic(self.mcp_client_id)
@@ -150,12 +162,14 @@ class MqttTransportClient(MqttTransportBase):
         return self.client_sessions.get(server_name, None)
 
     async def initialize_mcp_server(
-            self, server_name: str,
-            read_timeout_seconds: timedelta | None = None,
-            sampling_callback: SamplingFnT | None = None,
-            list_roots_callback: ListRootsFnT | None = None,
-            logging_callback: LoggingFnT | None = None,
-            message_handler: MessageHandlerFnT | None = None) -> InitializeResult:
+        self,
+        server_name: str,
+        read_timeout_seconds: timedelta | None = None,
+        sampling_callback: SamplingFnT | None = None,
+        list_roots_callback: ListRootsFnT | None = None,
+        logging_callback: LoggingFnT | None = None,
+        message_handler: MessageHandlerFnT | None = None,
+    ) -> InitializeResult:
         if server_name in self.client_sessions:
             return "already_connected"
         if server_name not in self.server_list:
@@ -163,24 +177,26 @@ class MqttTransportClient(MqttTransportBase):
             return ("error", "MCP server not found")
         server_id = self.pick_server_id(server_name)
 
-        async def after_subscribed(
-                subscribe_result: Literal["success", "error"]
-            ):
+        async def after_subscribed(subscribe_result: Literal["success", "error"]):
             if subscribe_result == "error":
                 if self.on_mcp_connect:
-                    self._task_group.start_soon(self.on_mcp_connect, self, server_name, ("error", "subscribe_mcp_server_topics_failed"))
+                    self._task_group.start_soon(
+                        self.on_mcp_connect, self, server_name, ("error", "subscribe_mcp_server_topics_failed")
+                    )
             client_session = self._create_session(
                 server_id,
                 server_name,
                 read_timeout_seconds,
                 sampling_callback,
+                None,  # elicitation_callback
                 list_roots_callback,
                 logging_callback,
-                message_handler
+                message_handler,
             )
             self.client_sessions[server_name] = client_session
             try:
                 logger.debug(f"before initialize: {server_name}")
+
                 async def after_initialize():
                     exit_stack = AsyncExitStack()
                     try:
@@ -193,6 +209,7 @@ class MqttTransportClient(MqttTransportBase):
                         self.client_sessions.pop(server_name)
                         logging.error(f"Failed to initialize server {server_name}: {e}")
                         await exit_stack.aclose()
+
                 self._task_group.start_soon(after_initialize)
                 logger.debug(f"after initialize: {server_name}")
             except McpError as exc:
@@ -209,20 +226,20 @@ class MqttTransportClient(MqttTransportBase):
     async def deinitialize_mcp_server(self, server_name: ServerName) -> None:
         server_id = self._current_server_id[server_name]
         topic = mqtt_topic.get_rpc_topic(self.mcp_client_id, server_id, server_name)
-        self.publish_json_rpc_message(topic, message = self._disconnected_msg, retain=False)
+        self.publish_json_rpc_message(topic, message=self._disconnected_msg, retain=False)
         self._remove_server(server_id, server_name)
 
     async def send_ping(self, server_name: ServerName) -> bool | types.EmptyResult:
         return await self._with_session(server_name, lambda s: s.send_ping())
 
     async def send_progress_notification(
-        self, server_name: ServerName, progress_token: str | int,
-        progress: float, total: float | None = None
+        self, server_name: ServerName, progress_token: str | int, progress: float, total: float | None = None
     ) -> bool | None:
-        return await self._with_session(server_name, lambda s: s.send_progress_notification(progress_token, progress, total))
+        return await self._with_session(
+            server_name, lambda s: s.send_progress_notification(progress_token, progress, total)
+        )
 
-    async def set_logging_level(self, server_name: ServerName,
-                                level: types.LoggingLevel) -> bool | types.EmptyResult:
+    async def set_logging_level(self, server_name: ServerName, level: types.LoggingLevel) -> bool | types.EmptyResult:
         return await self._with_session(server_name, lambda s: s.set_logging_level(level))
 
     async def list_resources(self, server_name: ServerName) -> bool | types.ListResourcesResult:
@@ -231,16 +248,13 @@ class MqttTransportClient(MqttTransportBase):
     async def list_resource_templates(self, server_name: ServerName) -> bool | types.ListResourceTemplatesResult:
         return await self._with_session(server_name, lambda s: s.list_resource_templates())
 
-    async def read_resource(self, server_name: ServerName,
-                            uri: AnyUrl) -> bool | types.ReadResourceResult:
+    async def read_resource(self, server_name: ServerName, uri: AnyUrl) -> bool | types.ReadResourceResult:
         return await self._with_session(server_name, lambda s: s.read_resource(uri))
 
-    async def subscribe_resource(self, server_name: ServerName,
-                                 uri: AnyUrl) -> bool | types.EmptyResult:
+    async def subscribe_resource(self, server_name: ServerName, uri: AnyUrl) -> bool | types.EmptyResult:
         return await self._with_session(server_name, lambda s: s.subscribe_resource(uri))
 
-    async def unsubscribe_resource(self, server_name: ServerName,
-                                   uri: AnyUrl) -> bool | types.EmptyResult:
+    async def unsubscribe_resource(self, server_name: ServerName, uri: AnyUrl) -> bool | types.EmptyResult:
         return await self._with_session(server_name, lambda s: s.unsubscribe_resource(uri))
 
     async def call_tool(
@@ -259,7 +273,7 @@ class MqttTransportClient(MqttTransportBase):
     async def complete(
         self,
         server_name: ServerName,
-        ref: types.ResourceReference | types.PromptReference,
+        ref: types.ResourceTemplateReference | types.PromptReference,
         argument: dict[str, str],
     ) -> bool | types.CompleteResult:
         return await self._with_session(server_name, lambda s: s.complete(ref, argument))
@@ -271,49 +285,67 @@ class MqttTransportClient(MqttTransportBase):
         return await self._with_session(server_name, lambda s: s.send_roots_list_changed())
 
     async def _with_session(
-            self, server_name: ServerName,
-            async_callback: Callable[[MqttClientSession], Awaitable[bool | Any]]) -> bool | Any:
+        self, server_name: ServerName, async_callback: Callable[[MqttClientSession], Awaitable[bool | Any]]
+    ) -> bool | Any:
         if not (client_session := self.client_sessions.get(server_name, None)):
             logger.error(f"No session for server_name: {server_name}")
             return False
         return await async_callback(client_session)
 
     def _create_session(
-            self, server_id: ServerId, server_name: ServerName,
-            read_timeout_seconds: timedelta | None = None,
-            sampling_callback: SamplingFnT | None = None,
-            list_roots_callback: ListRootsFnT | None = None,
-            logging_callback: LoggingFnT | None = None,
-            message_handler: MessageHandlerFnT | None = None
+        self,
+        server_id: ServerId,
+        server_name: ServerName,
+        read_timeout_seconds: timedelta | None = None,
+        sampling_callback: SamplingFnT | None = None,
+        elicitation_callback: ElicitationFnT | None = None,
+        list_roots_callback: ListRootsFnT | None = None,
+        logging_callback: LoggingFnT | None = None,
+        message_handler: MessageHandlerFnT | None = None,
     ):
         ## Streams are used to communicate between the MqttTransportClient and the MCPSession:
-        ## 1. (msg) --> MqttBroker --> MqttTransportClient -->[read_stream_writer]-->[read_stream]--> MCPSession
-        ## 2. MqttBroker <-- MqttTransportClient <--[write_stream_reader]--[write_stream]-- MCPSession <-- (msg)
-        read_stream: RcvStreamEx
-        read_stream_writer: SndStreamEX
-        write_stream: SndStream
-        write_stream_reader: RcvStream
-        read_stream_writer, read_stream = anyio.create_memory_object_stream(0) # type: ignore
-        write_stream, write_stream_reader = anyio.create_memory_object_stream(0) # type: ignore
-        self._read_stream_writers[server_id] = read_stream_writer
-        self._task_group.start_soon(self._receieved_from_session, server_id, server_name, write_stream_reader)
+        ## 1. MQTT --> Client -->[raw_read]-- conversion -->[session_read]--> MCPSession
+        ## 2. MQTT <-- Client <--[raw_write]<-- conversion <--[session_write]<-- MCPSession
+        # Create raw streams for JSONRPCMessage
+        raw_read_stream_writer, raw_read_stream = anyio.create_memory_object_stream[types.JSONRPCMessage | Exception](0)
+        raw_write_stream, raw_write_stream_reader = anyio.create_memory_object_stream[types.JSONRPCMessage](0)
+
+        # Create SessionMessage streams for the session
+        session_read_stream_writer, session_read_stream = anyio.create_memory_object_stream[SessionMessage | Exception](
+            0
+        )
+        session_write_stream, session_write_stream_reader = anyio.create_memory_object_stream[SessionMessage](0)
+
+        # Start conversion tasks
+        self._task_group.start_soon(self._convert_jsonrpc_to_session, raw_read_stream, session_read_stream_writer)
+        self._task_group.start_soon(self._convert_session_to_jsonrpc, session_write_stream_reader, raw_write_stream)
+        self._read_stream_writers[server_id] = raw_read_stream_writer
+        self._task_group.start_soon(self._receieved_from_session, server_id, server_name, raw_write_stream_reader)
         logger.debug(f"Created new session for server_id: {server_id}")
         return MqttClientSession(
             server_id,
             server_name,
-            read_stream,
-            write_stream,
+            session_read_stream,
+            session_write_stream,
             read_timeout_seconds,
             sampling_callback,
+            elicitation_callback,
             list_roots_callback,
             logging_callback,
-            message_handler
+            message_handler,
         )
 
-    def _on_connect(self, client: mqtt.Client, userdata: Any, connect_flags: mqtt.ConnectFlags, reason_code : ReasonCode, properties: Properties | None):
+    def _on_connect(
+        self,
+        client: mqtt.Client,
+        userdata: Any,
+        connect_flags: mqtt.ConnectFlags,
+        reason_code: ReasonCode,
+        properties: Properties | None,
+    ):
         super()._on_connect(client, userdata, connect_flags, reason_code, properties)
         if properties and hasattr(properties, "UserProperty"):
-            user_properties: dict[str, Any] = dict(properties.UserProperty) # type: ignore
+            user_properties: dict[str, Any] = dict(properties.UserProperty)  # type: ignore
             if MCP_SERVER_NAME_FILTERS in user_properties:
                 self.server_name_filter = json.loads(user_properties[MCP_SERVER_NAME_FILTERS])
                 logger.debug(f"Use broker suggested server name filters: {self.server_name_filter}")
@@ -321,7 +353,7 @@ class MqttTransportClient(MqttTransportBase):
             ## Subscribe to the MCP server's presence topic
             for snf in self.server_name_filter:
                 logger.debug(f"Subscribing to server presence topic for server_name_filter: {snf}")
-                client.subscribe(mqtt_topic.get_server_presence_topic('+', snf), qos=QOS)
+                client.subscribe(mqtt_topic.get_server_presence_topic("+", snf), qos=QOS)
 
     def _on_message(self, client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage):
         logger.debug(f"Received message on topic {msg.topic}: {msg.payload.decode()}")
@@ -335,17 +367,26 @@ class MqttTransportClient(MqttTransportBase):
             case _:
                 logger.error(f"Received message on unexpected topic: {msg.topic}")
 
-    def _on_subscribe(self, client: mqtt.Client, userdata: Any, mid: int,
-                      reason_code_list: list[ReasonCode], properties: Properties | None):
+    def _on_subscribe(
+        self,
+        client: mqtt.Client,
+        userdata: Any,
+        mid: int,
+        reason_code_list: list[ReasonCode],
+        properties: Properties | None,
+    ):
         if mid in userdata.get("pending_subs", {}):
             server_name, server_id, after_subscribed = userdata["pending_subs"].pop(mid)
             ## only create session if all topic subscribed successfully
-            if all([rc.value == QOS for rc in reason_code_list]):
+            if all(rc.value == QOS for rc in reason_code_list):
                 logger.debug(f"Subscribed to topics for server_name: {server_name}, server_id: {server_id}")
                 anyio_from_thread.run(after_subscribed, "success")
             else:
                 anyio_from_thread.run(after_subscribed, "error")
-                logger.error(f"Failed to subscribe to topics for server_name: {server_name}, server_id: {server_id}, reason_codes: {reason_code_list}")
+                logger.error(
+                    f"Failed to subscribe to topics for server_name: {server_name}, "
+                    f"server_id: {server_id}, reason_codes: {reason_code_list}"
+                )
 
     def _handle_server_presence_message(self, msg: mqtt.MQTTMessage) -> None:
         topic_words = msg.topic.split("/")
@@ -381,11 +422,15 @@ class MqttTransportClient(MqttTransportBase):
         server_name = "/".join(msg.topic.split("/")[4:])
         anyio_from_thread.run(self._send_message_to_session, server_name, msg)
 
-    def _subscribe_mcp_server_topics(self, server_id: ServerId, server_name: ServerName,
-                             after_subscribed: Callable[[Any], Awaitable[None]]):
+    def _subscribe_mcp_server_topics(
+        self, server_id: ServerId, server_name: ServerName, after_subscribed: Callable[[Any], Awaitable[None]]
+    ):
         topic_filters = [
             (mqtt_topic.get_server_capability_change_topic(server_id, server_name), SubscribeOptions(qos=QOS)),
-            (mqtt_topic.get_rpc_topic(self.mcp_client_id, server_id, server_name), SubscribeOptions(qos=QOS, noLocal=True))
+            (
+                mqtt_topic.get_rpc_topic(self.mcp_client_id, server_id, server_name),
+                SubscribeOptions(qos=QOS, noLocal=True),
+            ),
         ]
         ret, mid = self.client.subscribe(topic=topic_filters)
         if ret != mqtt.MQTT_ERR_SUCCESS:
@@ -416,9 +461,11 @@ class MqttTransportClient(MqttTransportBase):
             logger.error(f"Failed to send msg to session for server_id: {server_id}, exception: {exc}")
             traceback.print_exc()
             ## TODO: the session does not handle exceptions for now
-            #await read_stream_writer.send(exc)
-    async def _receieved_from_session(self, server_id: ServerId, server_name: ServerName,
-                                     write_stream_reader: RcvStream):
+            # await read_stream_writer.send(exc)
+
+    async def _receieved_from_session(
+        self, server_id: ServerId, server_name: ServerName, write_stream_reader: RcvStream
+    ):
         async with write_stream_reader:
             async for msg in write_stream_reader:
                 logger.debug(f"Got msg from session for server_id: {server_id}, msg: {msg}")
@@ -434,7 +481,7 @@ class MqttTransportClient(MqttTransportBase):
                     case _:
                         topic = mqtt_topic.get_rpc_topic(self.mcp_client_id, server_id, server_name)
                 if topic:
-                    self.publish_json_rpc_message(topic, message = msg)
+                    self.publish_json_rpc_message(topic, message=msg)
         # cleanup
         if server_id in self._read_stream_writers:
             logger.debug(f"Removing session for server_id: {server_id}")
@@ -445,7 +492,7 @@ class MqttTransportClient(MqttTransportBase):
         logger.debug(f"Unsubscribing from topics for server_id: {server_id}, server_name: {server_name}")
         topic_filters = [
             mqtt_topic.get_server_capability_change_topic(server_id, server_name),
-            mqtt_topic.get_rpc_topic(self.mcp_client_id, server_id, server_name)
+            mqtt_topic.get_rpc_topic(self.mcp_client_id, server_id, server_name),
         ]
         self.client.unsubscribe(topic=topic_filters)
 
@@ -467,6 +514,31 @@ class MqttTransportClient(MqttTransportBase):
         server_id = random.choice(list(self.server_list[server_name].keys()))
         self._current_server_id[server_name] = server_id
         return server_id
+
+    async def _convert_jsonrpc_to_session(
+        self,
+        jsonrpc_stream: MemoryObjectReceiveStream[types.JSONRPCMessage | Exception],
+        session_writer: MemoryObjectSendStream[SessionMessage | Exception],
+    ) -> None:
+        """Convert JSONRPCMessage stream to SessionMessage stream."""
+        async with jsonrpc_stream, session_writer:
+            async for message in jsonrpc_stream:
+                if isinstance(message, Exception):
+                    await session_writer.send(message)
+                else:
+                    session_message = SessionMessage(message=message)
+                    await session_writer.send(session_message)
+
+    async def _convert_session_to_jsonrpc(
+        self,
+        session_stream: MemoryObjectReceiveStream[SessionMessage],
+        jsonrpc_writer: MemoryObjectSendStream[types.JSONRPCMessage],
+    ) -> None:
+        """Convert SessionMessage stream to JSONRPCMessage stream."""
+        async with session_stream, jsonrpc_writer:
+            async for session_message in session_stream:
+                await jsonrpc_writer.send(session_message.message)
+
 
 def validate_server_name(name: str):
     if "/" not in name:
