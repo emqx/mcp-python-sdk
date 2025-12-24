@@ -13,15 +13,15 @@ from mcp.server import Server as LowLevelServer
 
 try:
     import typer
-except ImportError:  # pragma: no cover
-    print("Error: typer is required. Install with 'pip install mcp[cli]'")
+except ImportError as e:  # pragma: no cover
+    print(f"Error: typer is required. Install with 'pip install mcp[cli]': {e}")
     sys.exit(1)
 
 try:
     from mcp.cli import claude
     from mcp.server.fastmcp.utilities.logging import get_logger
-except ImportError:  # pragma: no cover
-    print("Error: mcp.server.fastmcp is not installed or not in PYTHONPATH")
+except ImportError as e:  # pragma: no cover
+    print(f"Error: mcp.server.fastmcp is not installed or not in PYTHONPATH: {e}")
     sys.exit(1)
 
 try:

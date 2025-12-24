@@ -10,6 +10,7 @@ from pydantic import AnyUrl, BaseModel
 from mcp.client.session import ClientSession, SamplingFnT, ListRootsFnT, LoggingFnT, MessageHandlerFnT
 from mcp.shared.exceptions import McpError
 from mcp.shared.mqtt import MqttTransportBase, MqttOptions, QOS, MCP_SERVER_NAME_FILTERS
+from mcp.shared.message import SessionMessage
 import asyncio
 import anyio.to_thread as anyio_to_thread
 import anyio.from_thread as anyio_from_thread
@@ -25,10 +26,10 @@ from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStre
 from typing import Any, Literal, TypeAlias, Callable, Awaitable
 import mcp.types as types
 
-RcvStream : TypeAlias = MemoryObjectReceiveStream[types.JSONRPCMessage]
-SndStream : TypeAlias = MemoryObjectSendStream[types.JSONRPCMessage]
-RcvStreamEx : TypeAlias = MemoryObjectReceiveStream[types.JSONRPCMessage | Exception]
-SndStreamEX : TypeAlias = MemoryObjectSendStream[types.JSONRPCMessage | Exception]
+RcvStream : TypeAlias = MemoryObjectReceiveStream[SessionMessage]
+SndStream : TypeAlias = MemoryObjectSendStream[SessionMessage]
+RcvStreamEx : TypeAlias = MemoryObjectReceiveStream[SessionMessage | Exception]
+SndStreamEX : TypeAlias = MemoryObjectSendStream[SessionMessage | Exception]
 ServerRun : TypeAlias = Callable[[RcvStreamEx, SndStream], Awaitable[Any]]
 
 ServerName : TypeAlias = str
@@ -52,22 +53,22 @@ class MqttClientSession(ClientSession):
         self,
         server_id: ServerId,
         server_name: ServerName,
-        read_stream: MemoryObjectReceiveStream[types.JSONRPCMessage | Exception],
-        write_stream: MemoryObjectSendStream[types.JSONRPCMessage],
-        read_timeout_seconds: timedelta | None = None,
+        read_stream: MemoryObjectReceiveStream[SessionMessage | Exception],
+        write_stream: MemoryObjectSendStream[SessionMessage],
+        read_timeout_seconds: float | None = None,
         sampling_callback: SamplingFnT | None = None,
         list_roots_callback: ListRootsFnT | None = None,
         logging_callback: LoggingFnT | None = None,
         message_handler: MessageHandlerFnT | None = None,
     ) -> None:
         super().__init__(
-            read_stream,
-            write_stream,
-            read_timeout_seconds,
-            sampling_callback,
-            list_roots_callback,
-            logging_callback,
-            message_handler,
+            read_stream = read_stream,
+            write_stream = write_stream,
+            read_timeout_seconds = read_timeout_seconds,
+            sampling_callback = sampling_callback,
+            list_roots_callback = list_roots_callback,
+            logging_callback = logging_callback,
+            message_handler = message_handler,
         )
         self.server_id = server_id
         self.server_name = server_name
@@ -151,7 +152,7 @@ class MqttTransportClient(MqttTransportBase):
 
     async def initialize_mcp_server(
             self, server_name: str,
-            read_timeout_seconds: timedelta | None = None,
+            read_timeout_seconds: float | None = None,
             sampling_callback: SamplingFnT | None = None,
             list_roots_callback: ListRootsFnT | None = None,
             logging_callback: LoggingFnT | None = None,
@@ -259,7 +260,7 @@ class MqttTransportClient(MqttTransportBase):
     async def complete(
         self,
         server_name: ServerName,
-        ref: types.ResourceReference | types.PromptReference,
+        ref: types.ResourceTemplateReference | types.PromptReference,
         argument: dict[str, str],
     ) -> bool | types.CompleteResult:
         return await self._with_session(server_name, lambda s: s.complete(ref, argument))
@@ -280,7 +281,7 @@ class MqttTransportClient(MqttTransportBase):
 
     def _create_session(
             self, server_id: ServerId, server_name: ServerName,
-            read_timeout_seconds: timedelta | None = None,
+            read_timeout_seconds: float | None = None,
             sampling_callback: SamplingFnT | None = None,
             list_roots_callback: ListRootsFnT | None = None,
             logging_callback: LoggingFnT | None = None,
@@ -411,7 +412,7 @@ class MqttTransportClient(MqttTransportBase):
             message = types.JSONRPCMessage.model_validate_json(payload)
             logger.debug(f"Sending msg to session for server_id: {server_id}, msg: {message}")
             with anyio.fail_after(3):
-                await read_stream_writer.send(message)
+                await read_stream_writer.send(SessionMessage(message=message))
         except Exception as exc:
             logger.error(f"Failed to send msg to session for server_id: {server_id}, exception: {exc}")
             traceback.print_exc()
@@ -422,7 +423,7 @@ class MqttTransportClient(MqttTransportBase):
         async with write_stream_reader:
             async for msg in write_stream_reader:
                 logger.debug(f"Got msg from session for server_id: {server_id}, msg: {msg}")
-                match msg.model_dump():
+                match msg.message.model_dump():
                     case {"method": method} if method == "notifications/initialized":
                         logger.debug(f"Session initialized for server_id: {server_id}")
                         topic = mqtt_topic.get_rpc_topic(self.mcp_client_id, server_id, server_name)
@@ -434,7 +435,7 @@ class MqttTransportClient(MqttTransportBase):
                     case _:
                         topic = mqtt_topic.get_rpc_topic(self.mcp_client_id, server_id, server_name)
                 if topic:
-                    self.publish_json_rpc_message(topic, message = msg)
+                    self.publish_json_rpc_message(topic, message = msg.message)
         # cleanup
         if server_id in self._read_stream_writers:
             logger.debug(f"Removing session for server_id: {server_id}")

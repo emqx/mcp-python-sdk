@@ -179,6 +179,10 @@ class FastMCP(Generic[LifespanResultT]):
         lifespan: (Callable[[FastMCP[LifespanResultT]], AbstractAsyncContextManager[LifespanResultT]] | None) = None,
         auth: AuthSettings | None = None,
         transport_security: TransportSecuritySettings | None = None,
+        mqtt_server_description: str = '',
+        mqtt_server_meta: dict[str, Any] = {},
+        mqtt_client_id: str | None = None,
+        mqtt_options: MqttOptions = MqttOptions(),
     ):
         # Auto-enable DNS rebinding protection for localhost (IPv4 and IPv6)
         if transport_security is None and host in ("127.0.0.1", "localhost", "::1"):
@@ -206,6 +210,10 @@ class FastMCP(Generic[LifespanResultT]):
             lifespan=lifespan,
             auth=auth,
             transport_security=transport_security,
+            mqtt_server_description=mqtt_server_description,
+            mqtt_server_meta=mqtt_server_meta,
+            mqtt_client_id=mqtt_client_id,
+            mqtt_options=mqtt_options,
         )
 
         self._mcp_server = MCPServer(

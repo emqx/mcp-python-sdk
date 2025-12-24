@@ -18,11 +18,12 @@ import anyio
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from typing import Any, TypeAlias, Callable, Awaitable
 import mcp.types as types
+from mcp.shared.message import SessionMessage
 
-RcvStream : TypeAlias = MemoryObjectReceiveStream[types.JSONRPCMessage]
-SndStream : TypeAlias = MemoryObjectSendStream[types.JSONRPCMessage]
-RcvStreamEx : TypeAlias = MemoryObjectReceiveStream[types.JSONRPCMessage | Exception]
-SndStreamEX : TypeAlias = MemoryObjectSendStream[types.JSONRPCMessage | Exception]
+RcvStream : TypeAlias = MemoryObjectReceiveStream[SessionMessage]
+SndStream : TypeAlias = MemoryObjectSendStream[SessionMessage]
+RcvStreamEx : TypeAlias = MemoryObjectReceiveStream[SessionMessage | Exception]
+SndStreamEX : TypeAlias = MemoryObjectSendStream[SessionMessage | Exception]
 ServerSessionRun : TypeAlias = Callable[[RcvStreamEx, SndStream], Awaitable[Any]]
 
 logger = logging.getLogger(__name__)
@@ -220,7 +221,7 @@ class MqttTransportServer(MqttTransportBase):
             message = types.JSONRPCMessage.model_validate_json(payload)
             logger.debug(f"Sending msg to session for mcp_client_id: {mcp_client_id}, msg: {message}")
             with anyio.fail_after(3):
-                await read_stream_writer.send(message)
+                await read_stream_writer.send(SessionMessage(message=message))
         except Exception as exc:
             logger.error(f"Failed to send msg to session for mcp_client_id: {mcp_client_id}, exception: {exc}")
             traceback.print_exc()
@@ -231,14 +232,14 @@ class MqttTransportServer(MqttTransportBase):
         async with write_stream_reader:
             async for msg in write_stream_reader:
                 logger.debug(f"Got msg from session for mcp_client_id: {mcp_client_id}, msg: {msg}")
-                match msg.model_dump():
+                match msg.message.model_dump():
                     case {"method": "notifications/resources/updated"}:
                         logger.warning("Resource updates should not be sent from the session. Ignoring.")
                     case {"method": method} if method.endswith("/list_changed"):
                         logger.warning("Resource updates should not be sent from the session. Ignoring.")
                     case _:
                         topic = mqtt_topic.get_rpc_topic(mcp_client_id, self.server_id, self.server_name)
-                        self.publish_json_rpc_message(topic, message = msg)
+                        self.publish_json_rpc_message(topic, message = msg.message)
         # cleanup
         if mcp_client_id in self._read_stream_writers:
             logger.debug(f"Removing session for mcp_client_id: {mcp_client_id}")

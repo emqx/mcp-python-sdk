@@ -37,6 +37,7 @@ dependencies = [
     "typing-extensions>=4.9.0",
     "typing-inspection>=0.4.1",
     "paho-mqtt",
+    "typer>=0.20.1",
 ]
 
 [project.optional-dependencies]
@@ -139,7 +140,7 @@ max-returns = 13                                           # Default is 6
 max-statements = 102                                       # Default is 50
 
 [tool.uv.workspace]
-members = ["examples/clients/mqtt-clients", "examples/clients/*", "examples/servers/*", "examples/snippets"]
+members = ["examples/clients/*", "examples/servers/*", "examples/snippets"]
 
 [tool.uv.sources]
 mcp = { workspace = true }

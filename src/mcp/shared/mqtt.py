@@ -15,6 +15,7 @@ from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStre
 from pydantic import BaseModel, SecretStr
 from typing import Literal, Optional, Any, TypeAlias, Callable, Awaitable
 import mcp.types as types
+from mcp.shared.message import SessionMessage
 from typing_extensions import Self
 from abc import ABC, abstractmethod
 
@@ -27,10 +28,10 @@ PROPERTY_K_MCP_COMPONENT = "MCP-COMPONENT-TYPE"
 PROPERTY_K_MQTT_CLIENT_ID = "MCP-MQTT-CLIENT-ID"
 logger = logging.getLogger(__name__)
 
-RcvStream : TypeAlias = MemoryObjectReceiveStream[types.JSONRPCMessage]
-SndStream : TypeAlias = MemoryObjectSendStream[types.JSONRPCMessage]
-RcvStreamEx : TypeAlias = MemoryObjectReceiveStream[types.JSONRPCMessage | Exception]
-SndStreamEX : TypeAlias = MemoryObjectSendStream[types.JSONRPCMessage | Exception]
+RcvStream : TypeAlias = MemoryObjectReceiveStream[SessionMessage]
+SndStream : TypeAlias = MemoryObjectSendStream[SessionMessage]
+RcvStreamEx : TypeAlias = MemoryObjectReceiveStream[SessionMessage | Exception]
+SndStreamEX : TypeAlias = MemoryObjectSendStream[SessionMessage | Exception]
 ServerRun : TypeAlias = Callable[[RcvStreamEx, SndStream], Awaitable[Any]]
 
 class MqttOptions(BaseModel):
