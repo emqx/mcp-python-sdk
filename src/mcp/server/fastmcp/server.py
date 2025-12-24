@@ -153,6 +153,7 @@ class FastMCP(Generic[LifespanResultT]):
     def __init__(  # noqa: PLR0913
         self,
         name: str | None = None,
+        server_version: str | None = None,
         instructions: str | None = None,
         website_url: str | None = None,
         icons: list[Icon] | None = None,
@@ -218,6 +219,7 @@ class FastMCP(Generic[LifespanResultT]):
 
         self._mcp_server = MCPServer(
             name=name or "FastMCP",
+            version=server_version,
             instructions=instructions,
             website_url=website_url,
             icons=icons,

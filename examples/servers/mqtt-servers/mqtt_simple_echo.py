@@ -40,6 +40,7 @@ rbac_opts = {
 # Create server
 mcp = FastMCP(
     "demo_server/echo",
+    server_version="emqx-demo:1.0.0",
     log_level="DEBUG",
     mqtt_server_description="A simple FastMCP server that echoes back the input text.",
     mqtt_server_meta = rbac_opts,
